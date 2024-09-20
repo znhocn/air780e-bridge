@@ -1,0 +1,11 @@
+.git
+__pycache__
+*.pyc
+data/
+*.db
+*.db-wal
+*.db-shm
+.venv
+venv
+scripts/
+udev/

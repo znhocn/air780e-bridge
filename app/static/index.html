@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="brand.zh">Air780 短信桥</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📱</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- 登录 / 首次部署 -->
+<div id="login-view">
+  <div class="login-card hidden" id="setup-form">
+    <h1 data-i18n="brand.zh">Air780 短信桥</h1>
+    <p class="sub" data-i18n="setup.sub">首次使用，创建管理员账户</p>
+    <input id="setup-username" data-i18n-ph="setup.username.ph" placeholder="用户名" autocomplete="username" required>
+    <input id="setup-password" type="password" data-i18n-ph="setup.password.ph" placeholder="密码（至少 8 位）" autocomplete="new-password" required>
+    <input id="setup-password2" type="password" data-i18n-ph="setup.password2.ph" placeholder="确认密码" autocomplete="new-password" required>
+    <button type="submit" class="btn primary block" data-i18n="setup.submit">创建并登录</button>
+    <p id="setup-error" class="error hidden" data-i18n="setup.error"></p>
+  </div>
+
+  <form class="login-card hidden" id="login-form">
+    <h1 data-i18n="brand.zh">Air780 短信桥</h1>
+    <p class="sub" data-i18n="login.sub">管理端登录</p>
+    <input id="login-username" data-i18n-ph="login.username.ph" placeholder="用户名" autocomplete="username" required>
+    <input id="login-password" type="password" data-i18n-ph="login.password.ph" placeholder="密码" autocomplete="current-password" required>
+    <button type="submit" class="btn primary block" data-i18n="login.submit">登录</button>
+    <p id="login-error" class="error hidden" data-i18n="login.error"></p>
+  </form>
+</div>
+
+<div id="app-view" class="hidden">
+  <aside class="sidebar">
+    <div class="brand"><span data-i18n="brand.zh">Air780 短信桥</span><br><small data-i18n="brand.sub">短信转发桥</small></div>
+    <nav>
+      <button class="nav-btn active" data-view="status" data-i18n="nav.status">设备状态</button>
+      <button class="nav-btn" data-view="messages" data-i18n="nav.messages">短信收发</button>
+      <button class="nav-btn" data-view="notify" data-i18n="nav.notify">通知设置</button>
+      <button class="nav-btn" data-view="keys" data-i18n="nav.keys">API 密钥</button>
+      <button class="nav-btn" data-view="logs" data-i18n="nav.logs">转发日志</button>
+    </nav>
+    <button id="logout" class="btn ghost block" data-i18n="logout">退出登录</button>
+  </aside>
+
+  <main>
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- 设备状态 -->
+    <section id="view-status" class="view">
+      <h2 data-i18n="status.title">设备状态</h2>
+      <button id="refresh-status" class="btn" data-i18n="status.refresh">刷新</button>
+      <div id="status-grid" class="grid status-grid"></div>
+      <h3 data-i18n="status.signal">信号强度</h3>
+      <div id="signal-bar" class="signal"></div>
+    </section>
+
+    <!-- 短信 -->
+    <section id="view-messages" class="view hidden">
+      <h2 data-i18n="msg.send">发送短信</h2>
+      <form id="send-form" class="card">
+        <label data-i18n="msg.to">接收号码 <input id="send-to" data-i18n-ph="msg.to.ph" value="10086" placeholder="如 10086"></label>
+        <label data-i18n="msg.content">内容 <textarea id="send-content" rows="3" data-i18n-ph="msg.content.ph" placeholder="短信内容"></textarea></label>
+        <button type="submit" class="btn primary" data-i18n="msg.send.submit">发送</button>
+        <span class="hint" data-i18n="msg.send.hint">测试：默认发送到 10086（需插入 SIM 卡）</span>
+      </form>
+      <div class="msg-tabs">
+        <button class="msg-tab active" data-dir="in" data-i18n="msg.dir.in">收件箱</button>
+        <button class="msg-tab" data-dir="out" data-i18n="msg.dir.out">发件箱</button>
+        <button id="refresh-msgs" class="btn small" data-i18n="msg.refresh">刷新</button>
+        <span id="msg-filter" class="hint"></span>
+      </div>
+      <table id="msg-table">
+        <thead><tr><th>ID</th><th data-i18n="msg.col.dir">方向</th><th data-i18n="msg.col.num">号码</th><th data-i18n="msg.col.content">内容</th><th data-i18n="msg.col.status">状态</th><th data-i18n="msg.col.time">时间</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- 通知设置 -->
+    <section id="view-notify" class="view hidden">
+      <h2 data-i18n="notify.title">通知设置</h2>
+      <p class="hint" data-i18n="notify.hint">钉钉 / 企业微信 / 飞书 / Email 底层使用 <b>Apprise</b> 发送；Webhook 独立 HTTP 推送。每条配置可设置号码/内容过滤。</p>
+      <form id="notify-form" class="card">
+        <input type="hidden" id="notify-id">
+        <label data-i18n="notify.name">名称 <input id="notify-name" data-i18n-ph="notify.name.ph" placeholder="如 值班群钉钉机器人" required></label>
+        <label data-i18n="notify.channel">渠道
+          <select id="notify-type">
+            <option value="dingtalk" data-i18n="notify.type.dingtalk">钉钉</option>
+            <option value="wecom" data-i18n="notify.type.wecom">企业微信（群机器人）</option>
+            <option value="feishu" data-i18n="notify.type.feishu">飞书</option>
+            <option value="email" data-i18n="notify.type.email">Email</option>
+            <option value="webhook" data-i18n="notify.type.webhook">Webhook</option>
+          </select>
+        </label>
+        <div id="notify-params"></div>
+        <label data-i18n="notify.from">来自号码包含 <input id="notify-from" data-i18n-ph="notify.from.ph" placeholder="留空则不限制，如 10086"></label>
+        <label data-i18n="notify.contains">内容包含 <input id="notify-contains" data-i18n-ph="notify.contains.ph" placeholder="留空则不限制"></label>
+        <label class="inline"><input type="checkbox" id="notify-enabled" checked> <span data-i18n="notify.enabled">启用</span></label>
+        <button type="submit" class="btn primary" data-i18n="notify.save">保存配置</button>
+        <button type="button" id="notify-cancel-edit" class="btn hidden" data-i18n="notify.cancel">取消编辑</button>
+      </form>
+      <table id="notify-table">
+        <thead><tr><th>ID</th><th data-i18n="notify.col.name">名称</th><th data-i18n="notify.col.channel">渠道</th><th data-i18n="notify.col.filter">筛选</th><th data-i18n="notify.col.target">目标</th><th data-i18n="notify.col.status">状态</th><th data-i18n="notify.col.ops">操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- API 密钥 -->
+    <section id="view-keys" class="view hidden">
+      <h2 data-i18n="keys.title">API 密钥</h2>
+
+      <div class="card api-info">
+        <h3 data-i18n="keys.info.title">API 信息</h3>
+        <p data-i18n="keys.info.base">基础地址：<code id="api-base-url"></code>（与页面同一主机端口）</p>
+        <p data-i18n="keys.info.auth">认证方式：请求头携带 <code>Authorization: Bearer <你的密钥></code></p>
+        <pre id="api-example"></pre>
+      </div>
+
+      <form id="key-form" class="card">
+        <label data-i18n="keys.name">名称 <input id="key-name" data-i18n-ph="keys.name.ph" placeholder="如 test-client" required></label>
+        <button type="submit" class="btn primary" data-i18n="keys.create">创建密钥</button>
+      </form>
+      <div id="new-key-box" class="new-key hidden">
+        <p data-i18n="keys.new.hint">密钥仅显示一次，请立即复制保存：</p>
+        <code id="new-key"></code>
+        <button id="copy-key" class="btn" data-i18n="keys.copy">复制</button>
+      </div>
+      <table id="key-table">
+        <thead><tr><th>ID</th><th data-i18n="keys.col.name">名称</th><th data-i18n="keys.col.prefix">密钥前缀</th><th data-i18n="keys.col.status">状态</th><th data-i18n="keys.col.created">创建时间</th><th data-i18n="keys.col.last">最近使用</th><th data-i18n="keys.col.ops">操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- 转发日志 -->
+    <section id="view-logs" class="view hidden">
+      <h2 data-i18n="logs.title">转发日志</h2>
+      <button id="refresh-logs" class="btn" data-i18n="logs.refresh">刷新</button>
+      <table id="log-table">
+        <thead><tr><th>ID</th><th data-i18n="logs.col.mid">短信ID</th><th data-i18n="logs.col.num">号码</th><th data-i18n="logs.col.content">内容</th><th data-i18n="logs.col.channel">渠道</th><th data-i18n="logs.col.rule">配置</th><th data-i18n="logs.col.target">目标</th><th data-i18n="logs.col.result">结果</th><th data-i18n="logs.col.error">错误</th><th data-i18n="logs.col.time">时间</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+</div>
+
+<script src="/i18n.js"></script>
+<script>window.__i18nLangReady = true;</script>
+<script src="/app.js"></script>
+</body>
+</html>

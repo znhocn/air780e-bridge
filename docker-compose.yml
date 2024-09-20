@@ -1,0 +1,23 @@
+services:
+  air780-bridge:
+    build: .
+    container_name: air780-bridge
+    restart: unless-stopped
+    ports:
+      - "8888:8000"
+    devices:
+      # 把 19d1:0001（BYD EigenComm Compo）的 AT 口映射进容器
+      - /dev/ttyACM0:/dev/ttyACM0
+      - /dev/ttyACM1:/dev/ttyACM1
+      - /dev/ttyACM2:/dev/ttyACM2
+    # 未配置 environment：全部使用代码内置默认值（DEVICE_PORT 自动探测、DB_PATH=/data/bridge.db、
+    # JWT_SECRET 首次启动自动生成并入库、ADMIN_PASSWORD 无需配置——首次部署在网页创建管理员）
+    volumes:
+      - ./data:/data
+    # 需要自定义时，用 docker run 方式加 -e 覆盖，或在下方自行添加 environment 块：
+    #   environment:
+    #     DEVICE_PORT: auto
+    #     DEVICE_BAUDRATE: "115200"
+    #     JWT_SECRET: your-own-random-string
+    # 首次部署：浏览器打开 http://<主机>:8888，页面会引导创建管理员账户后再登录
+    # 仅使用短信（AT 命令）收发，不开 PPP/NCM，不会消耗 SIM 数据流量
