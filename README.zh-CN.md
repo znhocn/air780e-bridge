@@ -10,7 +10,7 @@
 
 ## 功能亮点
 
-- **收短信**：轮询 `AT+CMGL=4` → 去重 → 入库 SQLite（WAL）→ 按配置转发 → 逐条删除，模组/SIM 存储不保留短信
+- **收短信**：轮询 `AT+CMGL`（无参 = REC UNREAD）→ 去重 → 入库 SQLite（WAL）→ 按配置转发 → 逐条删除，模组/SIM 存储不保留短信
 - **发短信**：REST 先入库、后台串行发送，自动切换 GSM 7bit（160 字符/条）与 UCS2（67 字符/条，中文/长短信自动分段）
 - **通知转发**：钉钉 / 企业微信（群机器人）/ 飞书 / Telegram / Email，底层统一走 **Apprise**；另有独立 **Webhook HTTP 直推** 与任意 **Apprise URL** 渠道
 - **定时任务**：按天间隔周期发送短信（`interval_days`），可手动立即触发
@@ -144,13 +144,13 @@ Webhook 推送 body：
 - **`+CREG: 0,0` 无法注册 / `+CMS ERROR: 331`**：未插 SIM、SIM 松动或无信号 → 查 `AT+CPIN?`（应为 `+CPIN: READY`；`+CME ERROR: 10` 表示未插卡）。
 - **无法打开串口 / ModemManager 抢口**：安装 udev 规则；必要时 `systemctl stop ModemManager`。
 - **两个口都响应 AT**：`ttyACM0` 与 `ttyACM2` 均可，固定 `DEVICE_PORT` 其一，其余口勿同时占用。
-- **收不到短信**：确认 `AT+CMGF=1`、`AT+CNMI=2,1,0,0,0`、SIM 可正常收短信；接收侧每 `POLL_INTERVAL` 秒轮询 `AT+CMGL=4`。
+- **收不到短信**：确认 `AT+CMGF=1`、`AT+CNMI=2,1,0,0,0`、SIM 可正常收短信；接收侧每 `POLL_INTERVAL` 秒轮询 `AT+CMGL`（Air780E 不支持数字枚举如 `AT+CMGL=4`）。
 - **不消耗流量**：项目从不发起 `AT+CGDATA` / `AT+CGACT` / PPP，仅走短信 AT 命令。
 - **忘记管理员密码**：直接操作 SQLite `UPDATE admins SET password_hash='…', salt='…' WHERE username='…'`（PBKDF2-SHA256 240000 轮，可用 `python -c "import hashlib;print(hashlib.pbkdf2_hmac('sha256',b'新密码',bytes.fromhex('盐'),240000).hex())"` 生成）。
 
 ## 技术说明
 
-- **收短信**：每 `POLL_INTERVAL` 轮询 `AT+CMGL=4` → 解析（处理引号内带逗号的时间戳）→ 去重（10 分钟内同号同内容）→ 入库 `stored` → 按配置推送 → 逐条 `AT+CMGD` 删除 → 每轮后再 `AT+CMGD=1,2` 清已读/已发残留。短信与日志只存 SQLite，设备/SIM 存储不保留。
+- **收短信**：每 `POLL_INTERVAL` 轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持 `AT+CMGL=4`，会返回 `+CMS ERROR: 500`）→ 解析（处理引号内带逗号的时间戳、UCS2 引号包裹的正文行）→ 去重（10 分钟内同号同内容）→ 入库 `stored` → 按配置推送 → 逐条 `AT+CMGD` 删除 → 每轮后再 `AT+CMGD=1,2` 清已读/已发残留。短信与日志只存 SQLite，设备/SIM 存储不保留。
 - **发短信**：按内容是否含非 ASCII 自动选 `CSCS="GSM"`（160 字符/条）或 `CSCS="UCS2"`（67 字符/条，中文/长短信自动分段），`AT+CMGS` + ctrl-Z 提交；一条锁串行发送，避免与轮询撞车。
 - **状态采集**：`AT+CSQ`（信号）、`AT+CREG?`（`0`/`1`/`5`）、`AT+COPS?`、`AT+CGMM/CGMR/CGSN`、`AT+CPIN?`、`AT+CCID`，每 `STATUS_INTERVAL` 一次。
 - **断线自愈**：读异常触发 `on_fatal`，worker 每 `CONNECT_RETRY_INTERVAL` 自动重连并重新握手（`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`）。

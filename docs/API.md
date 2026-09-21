@@ -318,6 +318,7 @@ Query 参数：
   "sim_state": "ready",
   "ccid": "89860...",
   "operator": "CHINA MOBILE",
+  "network_type": "LTE",
   "reg_state": "1",
   "csq_rssi": 22,
   "csq_ber": 0,
@@ -343,7 +344,8 @@ Query 参数：
 | `model` / `fw_version` | 模组型号 / 固件版本（`AT+CGMM` / `AT+CGMR`） |
 | `imei` / `ccid` | IMEI / SIM 卡 ICCID |
 | `sim_state` | `ready` / `locked` / `absent` / `fail` 等 |
-| `operator` | 运营商名称（`AT+COPS?`） |
+| `operator` | 运营商名称（`AT+COPS?`），未注册时为空 |
+| `network_type` | 网络制式（`AT+COPS?` 的 AcT 字段）：`GSM` / `LTE` / `NB-IoT` 等，未知为空 |
 | `reg_state` | 网络注册状态（`AT+CREG?`）：`0` 未注册 / `1` 已注册 / `5` 漫游 |
 | `csq_rssi` / `csq_ber` | 信号强度 0–31 与误码率（`AT+CSQ`）；`99` 为不可测 |
 | `rssi_dbm` | 估算的 RSSI（dBm），不可测时为 `null` |

@@ -64,7 +64,10 @@ def parse_cmgl(lines: list) -> list:
             messages.append(cur)
             continue
         if cur is not None and not line.startswith("+CMGL") and line != "OK":
-            cur["body"] += line if not cur["body"] else "\n" + line
+            body = line.strip()
+            if len(body) >= 2 and body.startswith('"') and body.endswith('"'):
+                body = body[1:-1]
+            cur["body"] += body if not cur["body"] else "\n" + body
     return messages
 
 
@@ -234,6 +237,23 @@ class SerialWorker(threading.Thread):
         r = dev.command("AT+CREG?", 3)
         m = re.search(r"\+CREG:\s*\d+\s*,\s*(\d+)", "\n".join(r.lines))
         info["reg_state"] = m.group(1) if m else ""
+        dev.command("AT+COPS=3,0", 3)
+        r = dev.command("AT+COPS?", 3)
+        m = re.search(r'\+COPS:\s*\d+\s*,\s*\d+\s*,\s*"?([^",]+)"?\s*(?:,\s*(\d+))?', "\n".join(r.lines))
+        info["operator"] = m.group(1).strip() if m else ""
+        info["network_type"] = {
+            "0": "GSM",
+            "2": "UTRAN",
+            "3": "GSM/EDGE",
+            "4": "HSDPA",
+            "5": "HSUPA",
+            "6": "HSPA",
+            "7": "LTE",
+            "8": "EC-GSM",
+            "9": "LTE-M",
+            "10": "NB-IoT",
+            "11": "NR",
+        }.get(m.group(2), "") if m else ""
         r = dev.command("AT+CPIN?", 3)
         m = re.search(r"\+CPIN:\s*(.+)", "\n".join(r.lines))
         if m:
@@ -259,9 +279,6 @@ class SerialWorker(threading.Thread):
 
     def _refresh_static_info(self, dev, info: dict):
         """Device/SIM identifiers barely change: refresh only once per connect."""
-        r = dev.command("AT+COPS?", 3)
-        m = re.search(r"\+COPS:\s*\d+\s*,\s*\d+\s*,\s*\"?([^\"]+)\"?", "\n".join(r.lines))
-        info["operator"] = m.group(1) if m else ""
         r = dev.command("AT+CGMM", 3)
         model = "".join(r.lines[:-1]) if r.lines else ""
         model = re.sub(r"^\+CGMM:\s*", "", model).strip(' "\n').strip()
@@ -282,7 +299,7 @@ class SerialWorker(threading.Thread):
     # ---------- receive SMS ----------
 
     def _poll_incoming(self):
-        res = self.dev.command("AT+CMGL=4", 8)
+        res = self.dev.command("AT+CMGL", 8)
         if not res.ok or not any("+CMGL:" in ln for ln in res.lines):
             return
         for msg in parse_cmgl(res.lines):

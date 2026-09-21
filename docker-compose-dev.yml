@@ -9,8 +9,8 @@ services:
       - 8104:8000
     devices:
       # 把 19d1:0001（BYD EigenComm Compo）的 AT 串口映射进容器
+      - /dev/ttyACM0:/dev/ttyACM0
       - /dev/ttyACM1:/dev/ttyACM1
       - /dev/ttyACM2:/dev/ttyACM2
-      - /dev/ttyACM3:/dev/ttyACM3
     volumes:
       - ./data:/data

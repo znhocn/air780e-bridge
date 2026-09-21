@@ -322,11 +322,11 @@
             <div class="dash-foot">${T("status.checked")}: <b>${esc(s.checked_at || "—")}</b></div>
           </article>
 
-          <article class="dash-card">
+          <article class="dash-card net-card">
             <div class="dash-head">
               <div class="dash-title">
                 <span class="dash-ic">${ICONS.radio}</span>
-                <div><h3>${T("status.stat.network")}</h3><p>${s.operator || T("status.stat.network.sub")}</p></div>
+                <div><h3>${T("status.stat.network")}</h3><p>${s.operator ? esc(s.operator) : T("status.stat.network.sub")}</p></div>
               </div>
               <span class="chip ${registered ? "ok" : "warn"}">${registered ? T("status.stat.reg.ok") : T("status.stat.reg.no")}</span>
             </div>
@@ -345,6 +345,8 @@
                 <div><b>${s.csq_ber != null ? s.csq_ber : emDash}</b><span>BER</span></div>
               </div>
               <dl class="dash-dl">
+                ${dl(T("status.card.operator"), s.operator)}
+                ${dl(T("status.card.type"), s.network_type)}
                 ${dl(T("status.card.reg"), regLabel)}
                 <div class="dl-row"><dt>${T("status.card.sim")}</dt><dd>${simTag}</dd></div>
               </dl>

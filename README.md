@@ -10,7 +10,7 @@ An SMS receive / forward bridge built on the **Luat Air780E (4G Cat.1) module**.
 
 ## Highlights
 
-- **Receive SMS**: poll `AT+CMGL=4` → de-duplicate → store in SQLite (WAL) → forward per config → delete one by one; nothing is kept in module/SIM storage
+- **Receive SMS**: poll `AT+CMGL` (no argument = REC UNREAD) → de-duplicate → store in SQLite (WAL) → forward per config → delete one by one; nothing is kept in module/SIM storage
 - **Send SMS**: queued via REST, sent serially in the background, auto-switches between GSM 7-bit (160 chars/message) and UCS2 (67 chars/message, Chinese/long SMS automatically split into segments)
 - **Notification forwarding**: DingTalk / WeCom (group bot) / Feishu / Telegram / Email, all delivered through **Apprise** underneath; a dedicated **Webhook HTTP push** and arbitrary **Apprise URL** channels are also available
 - **Scheduled tasks**: send SMS on a daily interval (`interval_days`), with manual instant trigger
@@ -144,13 +144,13 @@ Webhook push body:
 - **`+CREG: 0,0` can't register / `+CMS ERROR: 331`**: no SIM, loose SIM, or no signal → check `AT+CPIN?` (should be `+CPIN: READY`; `+CME ERROR: 10` means no card inserted).
 - **Cannot open the serial port / ModemManager grabs it**: install the udev rules; if necessary `systemctl stop ModemManager`.
 - **Both ports respond to AT**: `ttyACM0` and `ttyACM2` both work; pin `DEVICE_PORT` to one of them and don't let another process hold the others.
-- **No SMS received**: confirm `AT+CMGF=1`, `AT+CNMI=2,1,0,0,0`, and that the SIM can receive SMS normally; on the receive side `AT+CMGL=4` is polled every `POLL_INTERVAL` seconds.
+- **No SMS received**: confirm `AT+CMGF=1`, `AT+CNMI=2,1,0,0,0`, and that the SIM can receive SMS normally; on the receive side `AT+CMGL` (no argument = REC UNREAD) is polled every `POLL_INTERVAL` seconds. The Air780E does not support numeric enumeration such as `AT+CMGL=4`.
 - **No data consumption**: the project never issues `AT+CGDATA` / `AT+CGACT` or PPP — it only uses SMS AT commands.
 - **Forgot admin password**: edit SQLite directly with `UPDATE admins SET password_hash='…', salt='…' WHERE username='…'` (PBKDF2-SHA256, 240000 rounds; generate with `python -c "import hashlib;print(hashlib.pbkdf2_hmac('sha256',b'new_password',bytes.fromhex('salt'),240000).hex())"`).
 
 ## Technical Notes
 
-- **Receiving**: poll `AT+CMGL=4` every `POLL_INTERVAL` → parse (handles timestamps with commas inside quotes) → de-duplicate (same number + same content within 10 minutes) → store as `stored` → push per config → delete one by one with `AT+CMGD` → then `AT+CMGD=1,2` to purge read/sent leftovers. Messages and logs live only in SQLite; nothing is kept in module/SIM storage.
+- **Receiving**: poll `AT+CMGL` (no argument = REC UNREAD; the Air780E rejects `AT+CMGL=4` with `+CMS ERROR: 500`) every `POLL_INTERVAL` → parse (handles timestamps with commas inside quotes, and body lines wrapped in quotes in UCS2 mode) → de-duplicate (same number + same content within 10 minutes) → store as `stored` → push per config → delete one by one with `AT+CMGD` → then `AT+CMGD=1,2` to purge read/sent leftovers. Messages and logs live only in SQLite; nothing is kept in module/SIM storage.
 - **Sending**: auto-selects `CSCS="GSM"` (160 chars/message) or `CSCS="UCS2"` (67 chars/message; Chinese/long SMS automatically split) based on whether the content contains non-ASCII characters, then submits via `AT+CMGS` + ctrl-Z; a command lock serializes sends to avoid clashing with polling.
 - **Status collection**: `AT+CSQ` (signal), `AT+CREG?` (`0`/`1`/`5`), `AT+COPS?`, `AT+CGMM/CGMR/CGSN`, `AT+CPIN?`, `AT+CCID`, once per `STATUS_INTERVAL`.
 - **Self-healing on disconnect**: a read exception triggers `on_fatal`; the worker auto-reconnects every `CONNECT_RETRY_INTERVAL` and re-runs the handshake (`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`).

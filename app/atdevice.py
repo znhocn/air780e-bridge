@@ -205,6 +205,7 @@ class ATDevice:
             raise ValueError("Number is empty")
         pure_ascii = all(ord(c) < 128 for c in number + content)
         charset = "GSM" if pure_ascii else "UCS2"
+        dcs = 0 if pure_ascii else 8
         seg_len = 160 if pure_ascii else 67
         pieces = [content[i : i + seg_len] for i in range(0, len(content), seg_len)]
         if not pieces:
@@ -217,6 +218,9 @@ class ATDevice:
                 res = self._submit(f'AT+CSCS="{charset}"', 5)
                 if not res.ok:
                     raise CommandError(f"Failed to set charset: {res.error_text()}")
+                res = self._submit(f"AT+CSMP=17,167,0,{dcs}", 5)
+                if not res.ok:
+                    raise CommandError(f"Failed to set text-mode params: {res.error_text()}")
                 self._charset = charset
 
             addr = number if pure_ascii else ucs2_hex(number)

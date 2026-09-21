@@ -280,6 +280,11 @@ td { overflow-wrap: anywhere; }
 .dl-row dt { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .dl-row dd { margin-top: 2px; font: 600 12px var(--mono); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* mobile network card: two per row, label + value on one aligned line */
+.net-card .dl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.net-card .dl-row dt { flex: 0 0 auto; }
+.net-card .dl-row dd { margin-top: 0; min-width: 0; text-align: right; }
+
 .sms-body { display: flex; flex-direction: column; gap: 12px; justify-content: space-between; flex: 1; }
 .sms-block-title { display: flex; align-items: center; gap: 8px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 10px; }
 .sms-block-title::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }

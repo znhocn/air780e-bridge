@@ -122,8 +122,8 @@ Webhook 推送 body：
 
 ## 短信收发技术要点
 
-- **收**：每 `POLL_INTERVAL` 轮询 `AT+CMGL=4` → 解析（含引号内带逗号时间戳）→ **去重**（10 分钟内同号码同内容）→ 入库 `stored` → 按配置推送 → 逐条 `AT+CMGD=index` 删除 → 每轮后再 `AT+CMGD=1,2` 清残留。设备/SIM 存储不保留短信。
-- **发**：REST 先入库 `queued` → worker 串行发送（一条锁，避免与轮询撞车）→ `sending` → `sent`/`failed`。按内容自动选 `CSCS="GSM"`（160 字符/条）或 `CSCS="UCS2"`（67 字符/条，中文/长短信自动分段）→ `AT+CMGS` + ctrl-Z 提交。
+- **收**：每 `POLL_INTERVAL` 轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持数字枚举如 `AT+CMGL=4`，会返回 `+CMS ERROR: 500`）→ 解析（含引号内带逗号时间戳、UCS2 引号包裹的正文行）→ **去重**（10 分钟内同号码同内容）→ 入库 `stored` → 按配置推送 → 逐条 `AT+CMGD=index` 删除 → 每轮后再 `AT+CMGD=1,2` 清残留。设备/SIM 存储不保留短信。
+- **发**：REST 先入库 `queued` → worker 串行发送（一条锁，避免与轮询撞车）→ `sending` → `sent`/`failed`。按内容自动选 `CSCS="GSM"`（160 字符/条）或 `CSCS="UCS2"`（67 字符/条，中文/长短信自动分段）→ 切换字符集时同时设 `AT+CSMP=17,167,0,8`（UCS2）/`17,167,0,0`（GSM）——**必须**，否则 Air780E 仍按 DCS=0（7bit）发出，收方看中文就是乱码 → `AT+CMGS` + ctrl-Z 提交。
 - **状态**：`AT+CSQ`（信号）、`AT+CREG?`（注册，`0` 未注册 / `1` 已注册 / `5` 漫游）、`AT+COPS?`、`AT+CGMM/CGMR/CGSN`、`AT+CPIN?`、`AT+CCID`；每 `STATUS_INTERVAL` 采集一次。
 - **断线**：读异常触发 `on_fatal`，worker 每隔 `CONNECT_RETRY_INTERVAL` 自动重连并重新握手（`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`）。
 - **来电**：`+CLIP` 事件（120 秒内同号去重）→ 按 `channel='call'` 相关日志计数，推送“来电”通知。
@@ -133,7 +133,7 @@ Webhook 推送 body：
 - `+CREG: 0,0` / `+CMS ERROR: 331`：未插 SIM、SIM 松动或无信号 → 查 `AT+CPIN?`。
 - 打不开串口 / ModemManager 抢口：装 udev 规则；必要时 `systemctl stop ModemManager`。
 - 两个口都响应 AT：`ttyACM0` 与 `ttyACM2` 均可；固定 `DEVICE_PORT` 其一。
-- 收不到短信：确认 `AT+CMGF=1`、`AT+CNMI=2,1,0,0,0`、插 SIM 后能收任意短信，再看轮询 `AT+CMGL=4`。
+- 收不到短信：确认 `AT+CMGF=1`、`AT+CNMI=2,1,0,0,0`、插 SIM 后能收任意短信，再看轮询 `AT+CMGL`。
 - 发送失败 `raw` 带 `+CMS ERROR: xxx`：xxx 按 AT 标准码对应（331=无网络/未插 SIM）。
 
 ## 约定与注意事项
