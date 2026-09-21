@@ -1,4 +1,4 @@
-"""API 密钥管理（管理端认证）"""
+"""API key management (admin auth)"""
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -28,11 +28,11 @@ def list_keys(request: Request):
 def create_key(body: schema.ApiKeyCreate, request: Request):
     db = request.app.state.db
     key = new_api_key()
-    db.execute(
+    mid = db.execute(
         "INSERT INTO api_keys (name, key_hash, key_prefix) VALUES (?,?,?)",
         (body.name, hash_api_key(key), key[:8]),
     )
-    row = db.row("SELECT id,name,created_at FROM api_keys WHERE key_hash=?", (hash_api_key(key),))
+    row = db.row("SELECT id,name,created_at FROM api_keys WHERE id=?", (mid,))
     return {
         "id": row["id"],
         "name": row["name"],
@@ -43,10 +43,19 @@ def create_key(body: schema.ApiKeyCreate, request: Request):
 
 
 @router.delete("/{key_id}", dependencies=[Depends(authenticate)])
+def delete_key(key_id: int, request: Request):
+    db = request.app.state.db
+    if not db.row("SELECT id FROM api_keys WHERE id=?", (key_id,)):
+        raise HTTPException(404, "API key not found")
+    db.execute("DELETE FROM api_keys WHERE id=?", (key_id,))
+    return {"ok": True}
+
+
+@router.post("/{key_id}/revoke", dependencies=[Depends(authenticate)])
 def revoke_key(key_id: int, request: Request):
     db = request.app.state.db
     if not db.row("SELECT id FROM api_keys WHERE id=?", (key_id,)):
-        raise HTTPException(404, "密钥不存在")
+        raise HTTPException(404, "API key not found")
     db.execute("UPDATE api_keys SET active=0 WHERE id=?", (key_id,))
     return {"ok": True}
 
@@ -55,6 +64,6 @@ def revoke_key(key_id: int, request: Request):
 def enable_key(key_id: int, request: Request):
     db = request.app.state.db
     if not db.row("SELECT id FROM api_keys WHERE id=?", (key_id,)):
-        raise HTTPException(404, "密钥不存在")
+        raise HTTPException(404, "API key not found")
     db.execute("UPDATE api_keys SET active=1 WHERE id=?", (key_id,))
     return {"ok": True}

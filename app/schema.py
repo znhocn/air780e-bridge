@@ -1,4 +1,4 @@
-"""Pydantic 请求/响应模型"""
+"""Pydantic request/response models"""
 
 from pydantic import BaseModel, Field
 
@@ -13,23 +13,9 @@ class SetupRequest(BaseModel):
     password: str = Field(..., min_length=8, max_length=128)
 
 
-class TokenResponse(BaseModel):
-    token: str
-
-
-class SendSmsRequest(BaseModel):
-    to: str = Field(..., description="目标号码")
-    content: str = Field(..., description="短信内容")
-
-
-class MessageOut(BaseModel):
-    id: int
-    direction: str
-    sender: str | None = None
-    receiver: str | None = None
-    content: str
-    status: str
-    created_at: str | None = None
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
 
 
 class Page(BaseModel):
@@ -43,37 +29,24 @@ class ApiKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
 
 
-class ApiKeyCreated(BaseModel):
-    id: int
-    name: str
-    key: str  # 仅创建时返回一次
-    key_prefix: str
-    created_at: str | None = None
-
-
-class ApiKeyOut(BaseModel):
-    id: int
-    name: str
-    key_prefix: str
-    active: int
-    created_at: str | None = None
-
-
 class NotifyIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
-    type: str = Field(..., description="dingtalk/wecom/feishu/email/webhook")
+    type: str = Field(..., description="dingtalk/wecom/feishu/telegram/email/webhook/apprise")
     enabled: bool = True
     match_from: str = ""
     match_contains: str = ""
     params: dict = Field(default_factory=dict)
 
 
-class NotifyOut(BaseModel):
-    id: int
-    name: str
-    type: str
-    enabled: int
-    match_from: str
-    match_contains: str
-    params: dict
-    created_at: str | None = None
+class TaskIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    enabled: bool = True
+    interval_days: int = Field(7, ge=1, le=365)
+    phone: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+
+
+class ContactIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    phone: str = Field(..., max_length=40)
+    note: str = Field("", max_length=200)

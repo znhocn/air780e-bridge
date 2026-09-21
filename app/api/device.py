@@ -1,4 +1,4 @@
-"""设备状态接口（API Key 认证）"""
+"""Device status endpoints (API key auth)"""
 
 from fastapi import APIRouter, Depends, Request
 
@@ -12,13 +12,24 @@ def status_info(request: Request):
     worker = request.app.state.worker
     db = request.app.state.db
     st = worker.status() if worker else {}
-    st["messages_total"] = db.row("SELECT COUNT(*) AS c FROM messages")["c"]
-    st["messages_in"] = db.row(
-        "SELECT COUNT(*) AS c FROM messages WHERE direction='in'"
-    )["c"]
-    st["messages_out_pending"] = db.row(
-        "SELECT COUNT(*) AS c FROM messages WHERE direction='out' AND status IN ('queued','sending')"
-    )["c"]
+    stats = db.row(
+        "SELECT "
+        "(SELECT COUNT(*) FROM messages) AS total, "
+        "(SELECT COUNT(*) FROM messages WHERE direction='in') AS in_cnt, "
+        "(SELECT COUNT(*) FROM messages WHERE direction='out' AND status IN ('queued','sending')) AS pending_cnt, "
+        "(SELECT COUNT(*) FROM messages WHERE direction='in' AND date(created_at)=date('now','localtime')) AS today_in_cnt, "
+        "(SELECT COUNT(*) FROM messages WHERE direction='out' AND date(created_at)=date('now','localtime')) AS today_out_cnt, "
+        "(SELECT COUNT(*) FROM messages WHERE direction='out' AND status='failed' "
+        "AND date(created_at)=date('now','localtime')) AS today_failed_cnt, "
+        "(SELECT COUNT(*) FROM forward_logs WHERE channel='call') AS calls_cnt"
+    )
+    st["messages_total"] = stats["total"]
+    st["messages_in"] = stats["in_cnt"]
+    st["messages_out_pending"] = stats["pending_cnt"]
+    st["messages_today_in"] = stats["today_in_cnt"]
+    st["messages_today_out"] = stats["today_out_cnt"]
+    st["messages_today_failed"] = stats["today_failed_cnt"]
+    st["calls_total"] = stats["calls_cnt"]
     return st
 
 
@@ -26,17 +37,17 @@ def status_info(request: Request):
 def reconnect(request: Request):
     worker = request.app.state.worker
     if not worker:
-        return {"ok": False, "detail": "worker 未启动"}
+        return {"ok": False, "detail": "worker not started"}
     worker.dev and worker.dev.close()
-    return {"ok": True, "detail": "已请求重连（worker 将自动拉起）"}
+    return {"ok": True, "detail": "reconnect requested (worker will restart automatically)"}
 
 
 @router.get("/sms-capable")
 def sms_capable(request: Request):
-    """探测当前端口是否支持短信（文本模式）。"""
+    """Check whether the current port supports SMS (text mode)."""
     worker = request.app.state.worker
     if not worker or not worker.dev or not worker.dev.connected:
-        return {"capable": False, "detail": "未连接"}
+        return {"capable": False, "detail": "not connected"}
     res = worker.dev.command("AT+CSMS?", 5)
     ok = res.ok and any("CSMS" in ln or ">" in ln for ln in res.lines)
     return {"capable": True, "detail": res.lines}

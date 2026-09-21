@@ -1,4 +1,4 @@
-"""认证：管理端账户 + JWT + 客户端 API Key"""
+"""Authentication: admin account + JWT + client API key."""
 
 import hashlib
 import hmac
@@ -15,7 +15,7 @@ from .config import settings
 bearer = HTTPBearer(auto_error=False)
 
 UNAUTHORIZED = HTTPException(
-    status_code=401, detail="未认证或凭证无效", headers={"WWW-Authenticate": "Bearer"}
+    status_code=401, detail="Not authenticated or invalid credentials", headers={"WWW-Authenticate": "Bearer"}
 )
 
 PBKDF2_ROUNDS = 240_000
@@ -30,7 +30,7 @@ def new_api_key() -> str:
 
 
 def hash_password(password: str) -> tuple[str, str]:
-    """返回 (salt, password_hash)，PKDF2-SHA256。"""
+    """Returns (salt, password_hash) using PBKDF2-SHA256."""
     salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac(
         "sha256", password.encode(), salt.encode(), PBKDF2_ROUNDS
@@ -73,21 +73,30 @@ def format_ts(s: str | None) -> str | None:
         return s
 
 
-def require_admin(
+def require_admin_user(
     cred: HTTPAuthorizationCredentials | None = Depends(bearer),
-) -> HTTPAuthorizationCredentials:
-    if cred is None or not verify_token(cred.credentials):
+) -> str:
+    """Admin-only dependency that returns the authenticated admin's username."""
+    if cred is None:
         raise UNAUTHORIZED
-    return cred
+    try:
+        data = jwt.decode(cred.credentials, settings.jwt_secret, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        raise UNAUTHORIZED
+    username = data.get("sub")
+    if not username:
+        raise UNAUTHORIZED
+    return username
 
 
 def authenticate(
     request: Request,
     cred: HTTPAuthorizationCredentials | None = Depends(bearer),
 ) -> dict:
-    """统一鉴权：接受管理端 JWT 或启用的 API Key 两种凭证。
+    """Unified auth: accepts either an admin JWT or an enabled API key.
 
-    管理页面使用 JWT，外部客户端使用 API Key，二者均可用同一套 REST API。
+    The admin page uses JWT; external clients use API keys. Both work against
+    the same REST API.
     """
     if cred is None:
         raise UNAUTHORIZED

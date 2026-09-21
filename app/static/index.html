@@ -3,145 +3,262 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title data-i18n="brand.zh">Air780 短信桥</title>
+<title data-i18n="brand.zh">Air780E SMS Bridge</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📱</text></svg>">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
-<!-- 登录 / 首次部署 -->
+<!-- login / first deployment -->
 <div id="login-view">
-  <div class="login-card hidden" id="setup-form">
-    <h1 data-i18n="brand.zh">Air780 短信桥</h1>
-    <p class="sub" data-i18n="setup.sub">首次使用，创建管理员账户</p>
-    <input id="setup-username" data-i18n-ph="setup.username.ph" placeholder="用户名" autocomplete="username" required>
-    <input id="setup-password" type="password" data-i18n-ph="setup.password.ph" placeholder="密码（至少 8 位）" autocomplete="new-password" required>
-    <input id="setup-password2" type="password" data-i18n-ph="setup.password2.ph" placeholder="确认密码" autocomplete="new-password" required>
-    <button type="submit" class="btn primary block" data-i18n="setup.submit">创建并登录</button>
-    <p id="setup-error" class="error hidden" data-i18n="setup.error"></p>
-  </div>
+  <form class="login-card hidden" id="setup-form">
+    <h1 data-i18n="brand.zh">Air780E SMS Bridge</h1>
+    <p class="sub" data-i18n="setup.sub">First use: create the admin account</p>
+    <input id="setup-username" data-i18n-ph="setup.username" placeholder="Username" autocomplete="username" required>
+    <input id="setup-password" type="password" data-i18n-ph="setup.password" placeholder="Password (min 8 characters)" autocomplete="new-password" required>
+    <input id="setup-password2" type="password" data-i18n-ph="setup.password2" placeholder="Confirm password" autocomplete="new-password" required>
+    <button type="submit" class="btn primary block" data-i18n="setup.submit">Create & Login</button>
+    <p id="setup-error" class="error hidden"></p>
+  </form>
 
   <form class="login-card hidden" id="login-form">
-    <h1 data-i18n="brand.zh">Air780 短信桥</h1>
-    <p class="sub" data-i18n="login.sub">管理端登录</p>
-    <input id="login-username" data-i18n-ph="login.username.ph" placeholder="用户名" autocomplete="username" required>
-    <input id="login-password" type="password" data-i18n-ph="login.password.ph" placeholder="密码" autocomplete="current-password" required>
-    <button type="submit" class="btn primary block" data-i18n="login.submit">登录</button>
-    <p id="login-error" class="error hidden" data-i18n="login.error"></p>
+    <h1 data-i18n="brand.zh">Air780E SMS Bridge</h1>
+    <p class="sub" data-i18n="login.sub">Admin login</p>
+    <input id="login-username" data-i18n-ph="login.username" placeholder="Username" autocomplete="username" required>
+    <input id="login-password" type="password" data-i18n-ph="login.password" placeholder="Password" autocomplete="current-password" required>
+    <button type="submit" class="btn primary block" data-i18n="login.button">Login</button>
+    <p id="login-error" class="error hidden"></p>
   </form>
 </div>
 
 <div id="app-view" class="hidden">
   <aside class="sidebar">
-    <div class="brand"><span data-i18n="brand.zh">Air780 短信桥</span><br><small data-i18n="brand.sub">短信转发桥</small></div>
+    <div class="brand"><span data-i18n="brand.zh">Air780E SMS Bridge</span><br><small data-i18n="brand.sub">SMS Forwarding Bridge</small></div>
     <nav>
-      <button class="nav-btn active" data-view="status" data-i18n="nav.status">设备状态</button>
-      <button class="nav-btn" data-view="messages" data-i18n="nav.messages">短信收发</button>
-      <button class="nav-btn" data-view="notify" data-i18n="nav.notify">通知设置</button>
-      <button class="nav-btn" data-view="keys" data-i18n="nav.keys">API 密钥</button>
-      <button class="nav-btn" data-view="logs" data-i18n="nav.logs">转发日志</button>
+      <button class="nav-btn active" data-view="status"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="15" width="3" height="6" rx="1"></rect><rect x="8" y="10" width="3" height="11" rx="1"></rect><rect x="13" y="6" width="3" height="15" rx="1"></rect><rect x="18" y="2" width="3" height="19" rx="1"></rect></svg><span data-i18n="nav.status">Device Status</span></button>
+      <button class="nav-btn" data-view="messages"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg><span data-i18n="nav.messages">Messages</span></button>
+      <button class="nav-btn" data-view="notify"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg><span data-i18n="nav.notify">Notifications</span></button>
+      <button class="nav-btn" data-view="tasks"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span data-i18n="nav.tasks">Scheduled SMS</span></button>
+      <button class="nav-btn" data-view="keys"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg><span data-i18n="nav.keys">API Keys</span></button>
+      <button class="nav-btn" data-view="logs"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span data-i18n="nav.logs">Forward Logs</span></button>
     </nav>
-    <button id="logout" class="btn ghost block" data-i18n="logout">退出登录</button>
+    <div class="sidebar-foot">
+      <button id="change-password-btn" class="btn ghost block" type="button"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span data-i18n="pwd.button">Change Password</span></button>
+      <button id="logout" class="btn ghost block" type="button"><svg class="nav-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg><span data-i18n="logout">Logout</span></button>
+      <div class="sidebar-meta">
+        <div id="app-version" class="version"></div>
+        <button id="lang-toggle" class="btn ghost lang-toggle" type="button">EN</button>
+      </div>
+    </div>
   </aside>
 
   <main>
     <div id="toast" class="toast hidden"></div>
 
-    <!-- 设备状态 -->
+    <!-- device status -->
     <section id="view-status" class="view">
-      <h2 data-i18n="status.title">设备状态</h2>
-      <button id="refresh-status" class="btn" data-i18n="status.refresh">刷新</button>
-      <div id="status-grid" class="grid status-grid"></div>
-      <h3 data-i18n="status.signal">信号强度</h3>
-      <div id="signal-bar" class="signal"></div>
-    </section>
-
-    <!-- 短信 -->
-    <section id="view-messages" class="view hidden">
-      <h2 data-i18n="msg.send">发送短信</h2>
-      <form id="send-form" class="card">
-        <label data-i18n="msg.to">接收号码 <input id="send-to" data-i18n-ph="msg.to.ph" value="10086" placeholder="如 10086"></label>
-        <label data-i18n="msg.content">内容 <textarea id="send-content" rows="3" data-i18n-ph="msg.content.ph" placeholder="短信内容"></textarea></label>
-        <button type="submit" class="btn primary" data-i18n="msg.send.submit">发送</button>
-        <span class="hint" data-i18n="msg.send.hint">测试：默认发送到 10086（需插入 SIM 卡）</span>
-      </form>
-      <div class="msg-tabs">
-        <button class="msg-tab active" data-dir="in" data-i18n="msg.dir.in">收件箱</button>
-        <button class="msg-tab" data-dir="out" data-i18n="msg.dir.out">发件箱</button>
-        <button id="refresh-msgs" class="btn small" data-i18n="msg.refresh">刷新</button>
-        <span id="msg-filter" class="hint"></span>
+      <div class="status-head">
+        <div>
+          <h2 data-i18n="status.title">Device Status</h2>
+          <p class="sub" data-i18n="status.sub">Live view of the serial link, cellular network and SMS service</p>
+        </div>
+        <div class="toolbar">
+          <button id="reconnect-device" class="btn" data-i18n="status.reconnect">Reconnect</button>
+          <button id="check-sms-capable" class="btn" data-i18n="status.smscapable">Check SMS</button>
+          <button id="refresh-status" class="btn" data-i18n="status.refresh">Refresh</button>
+        </div>
       </div>
-      <table id="msg-table">
-        <thead><tr><th>ID</th><th data-i18n="msg.col.dir">方向</th><th data-i18n="msg.col.num">号码</th><th data-i18n="msg.col.content">内容</th><th data-i18n="msg.col.status">状态</th><th data-i18n="msg.col.time">时间</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div id="status-grid"></div>
     </section>
 
-    <!-- 通知设置 -->
+    <!-- messages: chat layout -->
+    <section id="view-messages" class="view hidden">
+      <div class="msg-actions">
+        <h2 data-i18n="msg.title">SMS Chats</h2>
+        <div class="msg-actions-bar">
+          <input id="msg-search" class="toolbar-input chat-search" data-i18n-ph="msg.search.ph" placeholder="Search content..." autocomplete="off">
+          <div class="msg-actions-btn">
+            <button id="compose-btn" class="btn primary" data-i18n="msg.compose">New SMS</button>
+            <button id="refresh-msgs" class="btn" data-i18n="msg.refresh">Refresh</button>
+            <button id="contacts-toggle" class="btn" data-i18n="contacts.open">Contacts</button>
+          </div>
+        </div>
+      </div>
+      <div class="chat-wrap">
+        <div class="chat-side">
+          <div id="conv-list" class="conv-list"></div>
+          <div class="chat-side-foot">
+            <span id="msg-filter" class="hint"></span>
+          </div>
+        </div>
+        <div class="chat-main">
+          <div id="chat-header" class="chat-header">
+            <button id="chat-back" class="btn small chat-back" type="button">← <span data-i18n="msg.back">Back</span></button>
+            <div id="chat-head-avatar" class="chat-head-avatar"></div>
+            <div class="chat-title">
+              <b id="chat-peer"></b>
+              <span id="chat-contact-sub" class="hint"></span>
+            </div>
+          </div>
+          <div id="chat-body" class="chat-body">
+            <p class="hint chat-empty" data-i18n="msg.conv.empty">No messages yet</p>
+          </div>
+          <form id="send-form" class="chat-input">
+            <input id="send-content" data-i18n-ph="msg.chat.ph" placeholder="Type a message…" autocomplete="off">
+            <button type="submit" class="btn primary" data-i18n="msg.send.submit">Send</button>
+          </form>
+        </div>
+      </div>
+
+      <!-- contacts modal -->
+      <div id="contacts-panel" class="modal-overlay hidden">
+        <div class="modal-card card contacts-modal-card">
+          <div class="modal-head">
+            <h3 data-i18n="contacts.title">Contacts</h3>
+            <button type="button" id="contacts-close" class="btn small" data-i18n="contacts.close">Close</button>
+          </div>
+          <div class="contacts-modal-body">
+            <form id="contact-form" class="card contact-form">
+              <input type="hidden" id="contact-id">
+              <div class="contact-form-grid">
+                <label data-i18n="contacts.name">Name <input id="contact-name" data-i18n-ph="contacts.name.ph" required></label>
+                <label data-i18n="contacts.phone">Phone number <input id="contact-phone" data-i18n-ph="contacts.phone.ph" required></label>
+              </div>
+              <label data-i18n="contacts.note">Note <input id="contact-note" data-i18n-ph="contacts.note.ph"></label>
+              <div class="contact-form-ops">
+                <button type="submit" class="btn primary" data-i18n="contacts.save">Save contact</button>
+                <button type="button" id="contact-cancel" class="btn hidden" data-i18n="contacts.cancel">Cancel</button>
+              </div>
+            </form>
+            <div id="contact-list" class="contact-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- new SMS modal -->
+      <div id="compose-modal" class="modal-overlay hidden">
+        <form id="new-sms-form" class="modal-card card">
+          <div class="modal-head">
+            <h3 data-i18n="msg.compose">New SMS</h3>
+            <button type="button" id="compose-close" class="btn small" data-i18n="msg.compose.cancel">Cancel</button>
+          </div>
+          <label data-i18n="msg.compose.to">Recipient number <input id="new-sms-to" data-i18n-ph="msg.compose.to.ph" autocomplete="tel"></label>
+          <label data-i18n="msg.compose.content">SMS content
+            <textarea id="new-sms-content" rows="4" data-i18n-ph="msg.compose.content.ph"></textarea>
+          </label>
+          <div class="msg-char" id="new-sms-char"></div>
+          <div class="modal-foot">
+            <button type="submit" class="btn primary" data-i18n="msg.compose.send">Send SMS</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- notify settings -->
     <section id="view-notify" class="view hidden">
-      <h2 data-i18n="notify.title">通知设置</h2>
-      <p class="hint" data-i18n="notify.hint">钉钉 / 企业微信 / 飞书 / Email 底层使用 <b>Apprise</b> 发送；Webhook 独立 HTTP 推送。每条配置可设置号码/内容过滤。</p>
+      <h2 data-i18n="notify.title">Notifications</h2>
+      <p class="hint" data-i18n="notify.hint"></p>
       <form id="notify-form" class="card">
         <input type="hidden" id="notify-id">
-        <label data-i18n="notify.name">名称 <input id="notify-name" data-i18n-ph="notify.name.ph" placeholder="如 值班群钉钉机器人" required></label>
-        <label data-i18n="notify.channel">渠道
+        <label data-i18n="notify.name">Name <input id="notify-name" data-i18n-ph="notify.name.ph" placeholder="e.g. on-duty group bot" required></label>
+        <label data-i18n="notify.channel">Channel
           <select id="notify-type">
-            <option value="dingtalk" data-i18n="notify.type.dingtalk">钉钉</option>
-            <option value="wecom" data-i18n="notify.type.wecom">企业微信（群机器人）</option>
-            <option value="feishu" data-i18n="notify.type.feishu">飞书</option>
+            <option value="dingtalk" data-i18n="notify.type.dingtalk">DingTalk</option>
+            <option value="wecom" data-i18n="notify.type.wecom">WeCom (Group Bot)</option>
+            <option value="feishu" data-i18n="notify.type.feishu">Feishu</option>
+            <option value="telegram" data-i18n="notify.type.telegram">Telegram</option>
             <option value="email" data-i18n="notify.type.email">Email</option>
-            <option value="webhook" data-i18n="notify.type.webhook">Webhook</option>
+            <option value="webhook" data-i18n="notify.type.webhook" selected>Webhook</option>
+            <option value="apprise" data-i18n="notify.type.apprise">Apprise (custom URL)</option>
           </select>
         </label>
         <div id="notify-params"></div>
-        <label data-i18n="notify.from">来自号码包含 <input id="notify-from" data-i18n-ph="notify.from.ph" placeholder="留空则不限制，如 10086"></label>
-        <label data-i18n="notify.contains">内容包含 <input id="notify-contains" data-i18n-ph="notify.contains.ph" placeholder="留空则不限制"></label>
-        <label class="inline"><input type="checkbox" id="notify-enabled" checked> <span data-i18n="notify.enabled">启用</span></label>
-        <button type="submit" class="btn primary" data-i18n="notify.save">保存配置</button>
-        <button type="button" id="notify-cancel-edit" class="btn hidden" data-i18n="notify.cancel">取消编辑</button>
+        <label data-i18n="notify.from">From number contains <input id="notify-from" data-i18n-ph="notify.from.ph" placeholder="leave empty for any; e.g. 10086"></label>
+        <label data-i18n="notify.contains">Content contains <input id="notify-contains" data-i18n-ph="notify.contains.ph" placeholder="leave empty for any"></label>
+        <label class="inline"><input type="checkbox" id="notify-enabled" checked> <span data-i18n="notify.enabled">Enabled</span></label>
+        <button type="submit" class="btn primary" data-i18n="notify.save">Save config</button>
+        <button type="button" id="notify-cancel-edit" class="btn hidden" data-i18n="notify.cancel">Cancel edit</button>
       </form>
-      <table id="notify-table">
-        <thead><tr><th>ID</th><th data-i18n="notify.col.name">名称</th><th data-i18n="notify.col.channel">渠道</th><th data-i18n="notify.col.filter">筛选</th><th data-i18n="notify.col.target">目标</th><th data-i18n="notify.col.status">状态</th><th data-i18n="notify.col.ops">操作</th></tr></thead>
+      <div class="table-wrap"><table id="notify-table">
+        <thead><tr><th data-i18n="notify.table.name">Name</th><th data-i18n="notify.table.channel">Channel</th><th data-i18n="notify.table.match">Filter</th><th data-i18n="notify.table.target">Target</th><th data-i18n="notify.table.status">Status</th><th data-i18n="notify.table.ops">Actions</th></tr></thead>
         <tbody></tbody>
-      </table>
+      </table></div>
     </section>
 
-    <!-- API 密钥 -->
+    <!-- scheduled tasks -->
+    <section id="view-tasks" class="view hidden">
+      <h2 data-i18n="tasks.title">Scheduled SMS</h2>
+      <p class="hint" data-i18n="tasks.hint">Periodically send SMS by interval (days). Due tasks are queued/sent via the serial port; status updates after sending finishes.</p>
+      <form id="task-form" class="card">
+        <input type="hidden" id="task-id">
+        <label data-i18n="tasks.name">Name <input id="task-name" data-i18n-ph="tasks.name.ph" placeholder="e.g. daily check-in" required></label>
+        <label data-i18n="tasks.phone">Recipient number <input id="task-phone" data-i18n-ph="tasks.phone.ph" placeholder="e.g. 10086" required></label>
+        <label data-i18n="tasks.interval">Interval (days) <input id="task-interval" type="number" min="1" max="365" value="7" required></label>
+        <label data-i18n="tasks.content">Content <textarea id="task-content" rows="2" required></textarea></label>
+        <label class="inline"><input type="checkbox" id="task-enabled" checked> <span data-i18n="tasks.enabled">Enabled</span></label>
+        <button type="submit" class="btn primary" data-i18n="tasks.save">Save task</button>
+        <button type="button" id="task-cancel-edit" class="btn hidden" data-i18n="tasks.cancel">Cancel edit</button>
+      </form>
+      <div class="table-wrap"><table id="task-table">
+        <thead><tr><th data-i18n="tasks.table.name">Name</th><th data-i18n="tasks.table.phone">Number</th><th data-i18n="tasks.table.content">Content</th><th data-i18n="tasks.table.interval">Interval</th><th data-i18n="tasks.table.status">Status</th><th data-i18n="tasks.table.last">Last run</th><th data-i18n="tasks.table.ops">Actions</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </section>
+
+    <!-- API keys -->
     <section id="view-keys" class="view hidden">
-      <h2 data-i18n="keys.title">API 密钥</h2>
+      <h2 data-i18n="keys.title">API Keys</h2>
+      <p class="hint" data-i18n="keys.desc"></p>
 
       <div class="card api-info">
-        <h3 data-i18n="keys.info.title">API 信息</h3>
-        <p data-i18n="keys.info.base">基础地址：<code id="api-base-url"></code>（与页面同一主机端口）</p>
-        <p data-i18n="keys.info.auth">认证方式：请求头携带 <code>Authorization: Bearer <你的密钥></code></p>
+        <h3 data-i18n="keys.info">API info</h3>
+        <p data-i18n="keys.base">Base URL: <code id="api-base-url"></code> <button class="copy-btn" data-copy="api-base-url" type="button" data-i18n-title="keys.copy.action" aria-label="Copy"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button> (same host/port as this page)</p>
+        <p data-i18n="keys.auth">Auth: send header <span class="hidden"><code id="api-auth-code">Authorization: Bearer <your-key></code></span> <button class="copy-btn" data-copy="api-auth-code" type="button" data-i18n-title="keys.copy.action" aria-label="Copy"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></p>
         <pre id="api-example"></pre>
       </div>
 
       <form id="key-form" class="card">
-        <label data-i18n="keys.name">名称 <input id="key-name" data-i18n-ph="keys.name.ph" placeholder="如 test-client" required></label>
-        <button type="submit" class="btn primary" data-i18n="keys.create">创建密钥</button>
+        <label data-i18n="keys.name">Name <input id="key-name" data-i18n-ph="keys.name.ph" placeholder="e.g. test-client" required></label>
+        <button type="submit" class="btn primary" data-i18n="keys.create">Create key</button>
       </form>
       <div id="new-key-box" class="new-key hidden">
-        <p data-i18n="keys.new.hint">密钥仅显示一次，请立即复制保存：</p>
+        <p data-i18n="keys.new.hint">The key is shown only once — copy and save it now:</p>
         <code id="new-key"></code>
-        <button id="copy-key" class="btn" data-i18n="keys.copy">复制</button>
+        <button id="copy-key" class="btn" data-i18n="keys.copy.action">Copy</button>
       </div>
-      <table id="key-table">
-        <thead><tr><th>ID</th><th data-i18n="keys.col.name">名称</th><th data-i18n="keys.col.prefix">密钥前缀</th><th data-i18n="keys.col.status">状态</th><th data-i18n="keys.col.created">创建时间</th><th data-i18n="keys.col.last">最近使用</th><th data-i18n="keys.col.ops">操作</th></tr></thead>
+      <div class="table-wrap"><table id="key-table">
+        <thead><tr><th data-i18n="keys.col.name">Name</th><th data-i18n="keys.col.prefix">Key prefix</th><th data-i18n="keys.col.status">Status</th><th data-i18n="keys.col.created">Created</th><th data-i18n="keys.col.last">Last used</th><th data-i18n="keys.col.ops">Actions</th></tr></thead>
         <tbody></tbody>
-      </table>
+      </table></div>
     </section>
 
-    <!-- 转发日志 -->
+    <!-- forward logs -->
     <section id="view-logs" class="view hidden">
-      <h2 data-i18n="logs.title">转发日志</h2>
-      <button id="refresh-logs" class="btn" data-i18n="logs.refresh">刷新</button>
-      <table id="log-table">
-        <thead><tr><th>ID</th><th data-i18n="logs.col.mid">短信ID</th><th data-i18n="logs.col.num">号码</th><th data-i18n="logs.col.content">内容</th><th data-i18n="logs.col.channel">渠道</th><th data-i18n="logs.col.rule">配置</th><th data-i18n="logs.col.target">目标</th><th data-i18n="logs.col.result">结果</th><th data-i18n="logs.col.error">错误</th><th data-i18n="logs.col.time">时间</th></tr></thead>
+      <h2 data-i18n="logs.title">Forward Logs</h2>
+      <button id="refresh-logs" class="btn" data-i18n="logs.refresh">Refresh</button>
+      <div class="table-wrap"><table id="log-table">
+        <thead><tr><th>ID</th><th data-i18n="logs.col.num">Number</th><th data-i18n="logs.col.content">Content</th><th data-i18n="logs.col.channel">Channel</th><th data-i18n="logs.col.rule">Config</th><th data-i18n="logs.col.target">Target</th><th data-i18n="logs.col.result">Result</th><th data-i18n="logs.col.error">Error</th><th data-i18n="logs.col.time">Time</th></tr></thead>
         <tbody></tbody>
-      </table>
+      </table></div>
     </section>
   </main>
+</div>
+
+<!-- change password modal -->
+<div id="pwd-modal" class="modal-overlay hidden">
+  <form id="pwd-form" class="modal-card card">
+    <div class="modal-head">
+      <h3 data-i18n="pwd.title">Change Password</h3>
+      <button type="button" id="pwd-close" class="btn small" data-i18n="pwd.close">Cancel</button>
+    </div>
+    <label data-i18n="pwd.current">Current password <input type="password" id="pwd-current" autocomplete="current-password" required></label>
+    <label data-i18n="pwd.new">New password <input type="password" id="pwd-new" autocomplete="new-password" minlength="8" required></label>
+    <label data-i18n="pwd.confirm">Confirm new password <input type="password" id="pwd-confirm" autocomplete="new-password" minlength="8" required></label>
+    <p id="pwd-error" class="error hidden"></p>
+    <div class="modal-foot">
+      <button type="submit" class="btn primary" data-i18n="pwd.submit">Change password</button>
+    </div>
+  </form>
 </div>
 
 <script src="/i18n.js"></script>

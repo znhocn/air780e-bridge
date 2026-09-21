@@ -7,5 +7,4 @@ data/
 *.db-shm
 .venv
 venv
-scripts/
 udev/

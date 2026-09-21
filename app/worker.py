@@ -1,6 +1,7 @@
-"""后台串口工作线程：连接管理、短信轮询接收、短信发送队列、状态收集。"""
+"""Background serial worker: connection management, SMS polling, outbound SMS queue, status collection."""
 
 import logging
+import queue
 import re
 import threading
 import time
@@ -8,9 +9,9 @@ import time
 from .atdevice import ATDevice, CommandError, ucs2_decode, looks_ucs2
 from .config import settings
 
-log = logging.getLogger("air780.worker")
+log = logging.getLogger("air780e.worker")
 
-CMTI_RE = re.compile(r'^\+CMTI:\s*"([^"]*)",\s*(\d+)$')
+CALL_DEDUP_SECONDS = 120  # ignore repeated +CLIP reports for the same caller
 
 
 def _norm_number(n: str) -> str:
@@ -19,7 +20,7 @@ def _norm_number(n: str) -> str:
 
 
 def _csv_fields(s: str) -> list:
-    """按逗号切分，但保留引号内的逗号（如时间戳 "25/11/09,10:30:00+32"）。"""
+    """Split on commas but keep commas inside quotes (e.g. timestamp "25/11/09,10:30:00+32")."""
     fields, cur, in_q = [], [], False
     for ch in s:
         if ch == '"':
@@ -34,9 +35,9 @@ def _csv_fields(s: str) -> list:
 
 
 def parse_cmgl(lines: list) -> list:
-    """解析 AT+CMGL 文本模式输出为消息字典列表。
+    """Parse AT+CMGL text-mode output into a list of message dicts.
 
-    支持 +/- 存储、引号可选的地址字段与包含逗号的时间戳。
+    Handles +/- storage, addresses with optional quotes, and timestamps containing commas.
     """
     messages = []
     cur = None
@@ -67,30 +68,6 @@ def parse_cmgl(lines: list) -> list:
     return messages
 
 
-def parse_cmgr(lines: list) -> dict | None:
-    for i, line in enumerate(lines):
-        if line.startswith("+CMGR:"):
-            m = re.match(r'^\+CMGR:\s*(.*)$', line)
-            fields = _csv_fields(m.group(1))
-            status = fields[0] if fields else ""
-            addr = ""
-            for f in fields[1:]:
-                if f not in ("", "SM", "READ", "UNREAD") and not f.isdigit() and not f.startswith("REC") and not f.startswith("STO"):
-                    addr = f
-                    break
-            scts = next(
-                (f for f in reversed(fields[1:]) if "/" in f and ":" in f), None
-            )
-            return {
-                "index": None,
-                "status": status,
-                "address_raw": addr,
-                "scts": scts,
-                "body": "\n".join(lines[i + 1 :]),
-            }
-    return None
-
-
 def decode_address(raw: str, ucs2: bool) -> str:
     if ucs2 and looks_ucs2(raw):
         decoded = ucs2_decode(raw)
@@ -108,12 +85,14 @@ class SerialWorker(threading.Thread):
         self.dev: ATDevice | None = None
         self.ucs2 = False
         self._stop_event = threading.Event()
-        self._send_queue: list = []  # (msg_id, number, content)
+        self._send_queue: queue.Queue = queue.Queue()  # (msg_id, number, content)
         self._state = {"connected": False, "port": "", "config_err": ""}
         self._info_lock = threading.Lock()
         self._last_status_at = 0.0
+        self._last_call = (None, 0.0)  # (number, monotonic ts) for +CLIP dedup
+        self.on_send_result = None  # callable(message_id, ok) - outbound completion
 
-    # ---------- 状态 ----------
+    # ---------- status ----------
 
     def _set(self, **kw):
         with self._info_lock:
@@ -128,19 +107,19 @@ class SerialWorker(threading.Thread):
         if self.dev:
             self.dev.close()
 
-    # ---------- 主循环 ----------
+    # ---------- main loop ----------
 
     def run(self):
         while not self._stop_event.is_set():
             self._set(
                 connected=False,
                 port="",
-                config_err=self._state.get("config_err") and "dev" or "",
+                config_err="",
             )
             try:
                 self.connect_and_init()
             except Exception as exc:
-                log.warning("连接失败: %s", exc)
+                log.warning("Connection failed: %s", exc)
                 self._set(config_err=str(exc))
                 self._stop_event.wait(settings.retry_interval)
                 continue
@@ -148,7 +127,7 @@ class SerialWorker(threading.Thread):
             try:
                 self._poll_forever()
             except Exception as exc:
-                log.warning("轮询中断: %s", exc)
+                log.warning("Poll interrupted: %s", exc)
                 self._set(config_err=str(exc), connected=False)
                 if self.dev:
                     self.dev.close()
@@ -157,24 +136,29 @@ class SerialWorker(threading.Thread):
     def connect_and_init(self):
         port = self._pick_port()
         if not port:
-            raise CommandError(f"未找到可用串口（探测 {settings.device_probe_ports}）")
+            raise CommandError(f"No usable serial port found (probed {settings.device_probe_ports})")
         dev = ATDevice(port, settings.device_baudrate)
         dev.on_fatal = self._on_fatal
+        dev.on_call = self._on_incoming_call
         dev.open()
         self.dev = dev
         self._set(port=port)
 
         res = dev.command("AT", 5)
         if not res.ok:
-            raise CommandError(f"{port} 无响应")
+            raise CommandError(f"{port} no response")
         dev.command("ATE0", 3)
         cmgf = dev.command("AT+CMGF=1", 3)
         if not cmgf.ok:
-            raise CommandError(f"{port} 不支持文本模式短信")
+            raise CommandError(f"{port} does not support text-mode SMS")
         self.ucs2 = dev.command('AT+CSCS="UCS2"', 3).ok
-        dev.command("AT+CNMI=2,1,0,0,0", 3)  # 缓存模式，轮询兜底
+        dev.command("AT+CNMI=2,1,0,0,0", 3)  # cached mode; polling as a fallback
+        try:
+            dev.command("AT+CLIP=1", 3)  # caller line ID -> +CLIP unsolicited events
+        except Exception:
+            log.warning("AT+CLIP not enabled (incoming-call notification unavailable)")
         self._refresh_status(force=True)
-        log.info("设备就绪 %s (ucs2=%s) IMEI=%s", port, self.ucs2, self._state.get("imei"))
+        log.info("Device ready %s (ucs2=%s) IMEI=%s", port, self.ucs2, self._state.get("imei"))
 
     def _pick_port(self) -> str | None:
         if settings.device_port != "auto":
@@ -192,9 +176,37 @@ class SerialWorker(threading.Thread):
         return None
 
     def _on_fatal(self, exc):
-        log.info("串口断线事件: %s", exc)
+        log.info("Serial disconnect event: %s", exc)
 
-    # ---------- 轮询 ----------
+    def _on_incoming_call(self, number: str):
+        """Incoming call (+CLIP): de-duplicate and push a notification via the forwarder."""
+        num = _norm_number(number)
+        now = time.monotonic()
+        if not num:
+            log.info("Incoming call with no caller number (private/unknown)")
+            return
+        if num == self._last_call[0] and now - self._last_call[1] < CALL_DEDUP_SECONDS:
+            log.debug("Ignoring duplicate incoming-call report from %s", num)
+            return
+        self._last_call = (num, now)
+        log.info("Incoming call from %s", num)
+        if not self.forwarder:
+            return
+        try:
+            msg = {
+                "id": None,
+                "direction": "in",
+                "sender": num,
+                "receiver": "",
+                "content": "Incoming call",
+                "event": "call",
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            self.forwarder.forward(self.db, msg)
+        except Exception:
+            log.exception("Incoming-call notification failed")
+
+    # ---------- polling ----------
 
     def _poll_forever(self):
         while not self._stop_event.is_set() and self.dev and self.dev.connected:
@@ -204,7 +216,7 @@ class SerialWorker(threading.Thread):
                 self._poll_incoming()
                 self._process_send_queue()
             except Exception:
-                log.exception("轮询异常")
+                log.exception("Polling exception")
             self._stop_event.wait(settings.poll_interval)
 
     def _refresh_status(self, force: bool = False):
@@ -214,29 +226,60 @@ class SerialWorker(threading.Thread):
         if not dev:
             return
         info = {}
+        if force:
+            self._refresh_static_info(dev, info)
         r = dev.command("AT+CSQ", 3)
         m = re.search(r"\+CSQ:\s*(\d+)\s*,\s*(\d+)", "\n".join(r.lines))
         info["csq_rssi"], info["csq_ber"] = (int(m.group(1)), int(m.group(2))) if m else (None, None)
-        r = dev.command("AT+COPS?", 3)
-        m = re.search(r"\+COPS:\s*\d+\s*,\s*\d+\s*,\s*\"?([^\"]+)\"?", "\n".join(r.lines))
-        info["operator"] = m.group(1) if m else ""
         r = dev.command("AT+CREG?", 3)
         m = re.search(r"\+CREG:\s*\d+\s*,\s*(\d+)", "\n".join(r.lines))
         info["reg_state"] = m.group(1) if m else ""
-        r = dev.command("AT+CGMM", 3)
-        model = "".join(r.lines[:-1]) if r.lines else ""
-        model = re.sub(r"^\+CGMM:\s*", "", model).strip(' "\n').strip()
-        info["model"] = model
-        r = dev.command("AT+CGSN", 3)
-        imei = "".join(r.lines[:-1]) if r.lines else ""
-        imei = re.sub(r"^\+CGSN:\s*", "", imei).strip(' "\n').strip()
-        info["imei"] = imei
+        r = dev.command("AT+CPIN?", 3)
+        m = re.search(r"\+CPIN:\s*(.+)", "\n".join(r.lines))
+        if m:
+            sim_state = m.group(1).strip().upper()
+            info["sim_state"] = {
+                "READY": "ready",
+                "SIM PIN": "locked",
+                "SIM PUK": "locked",
+                "SIM PIN2": "locked",
+                "SIM PUK2": "locked",
+                "PH-NET PIN": "locked",
+                "NOT INSERTED": "absent",
+                "ABSENT": "absent",
+                "FAIL": "fail",
+            }.get(sim_state, sim_state)
+        else:
+            err = r.error_text()
+            info["sim_state"] = "absent" if "+CME ERROR: 10" in err else ("fail" if "+CME ERROR: 13" in err else "")
         info["rssi_dbm"] = (-113 + 2 * info["csq_rssi"]) if info["csq_rssi"] is not None and info["csq_rssi"] < 99 else None
         info["checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._last_status_at = time.monotonic()
         self._set(**info)
 
-    # ---------- 收短信 ----------
+    def _refresh_static_info(self, dev, info: dict):
+        """Device/SIM identifiers barely change: refresh only once per connect."""
+        r = dev.command("AT+COPS?", 3)
+        m = re.search(r"\+COPS:\s*\d+\s*,\s*\d+\s*,\s*\"?([^\"]+)\"?", "\n".join(r.lines))
+        info["operator"] = m.group(1) if m else ""
+        r = dev.command("AT+CGMM", 3)
+        model = "".join(r.lines[:-1]) if r.lines else ""
+        model = re.sub(r"^\+CGMM:\s*", "", model).strip(' "\n').strip()
+        info["model"] = model
+        r = dev.command("AT+CGMR", 3)
+        fw = "".join(r.lines[:-1]) if r.lines else ""
+        fw = re.sub(r"^\+CGMR:\s*", "", fw).strip(' "\n').strip()
+        info["fw_version"] = fw
+        r = dev.command("AT+CGSN", 3)
+        imei = "".join(r.lines[:-1]) if r.lines else ""
+        imei = re.sub(r"^\+CGSN:\s*", "", imei).strip(' "\n').strip()
+        info["imei"] = imei
+        r = dev.command("AT+CCID", 3)
+        ccid = "".join(r.lines[:-1]) if r.lines else ""
+        ccid = re.sub(r"^\+CCID:\s*", "", ccid).strip(' "\n').strip()
+        info["ccid"] = ccid
+
+    # ---------- receive SMS ----------
 
     def _poll_incoming(self):
         res = self.dev.command("AT+CMGL=4", 8)
@@ -245,9 +288,7 @@ class SerialWorker(threading.Thread):
         for msg in parse_cmgl(res.lines):
             sender = _norm_number(decode_address(msg["address_raw"], self.ucs2))
             content = msg["body"]
-            if self.ucs2 and looks_ucs2(content):
-                content = ucs2_decode(content)
-            elif not self.ucs2 and looks_ucs2(content):
+            if looks_ucs2(content):
                 content = ucs2_decode(content)
             scts = msg["scts"] or ""
             if not self._already_stored(sender, content):
@@ -257,19 +298,19 @@ class SerialWorker(threading.Thread):
                     (sender, content, f"idx={msg['index']} scts={scts}".strip()),
                 )
                 msg_row = self.db.row("SELECT * FROM messages WHERE id=?", (mid,))
-                log.info("收到短信 #%s 来自 %s: %s", mid, sender, content[:40])
+                log.info("Received SMS #%s from %s: %s", mid, sender, content[:40])
                 if self.forwarder:
                     self.forwarder.forward(self.db, msg_row)
                 if self.on_message:
                     try:
                         self.on_message(msg_row)
                     except Exception:
-                        log.exception("on_message 回调失败")
+                        log.exception("on_message callback failed")
             self._delete_msg(msg["index"])
         self._purge_device_messages()
 
     def _purge_device_messages(self):
-        """短信均已入库并逐条删除，这里再清掉已读+已发送的残留，保证 SIM 存储不被占满。"""
+        """SMS are inserted and deleted one by one; here we purge leftover read+sent entries so SIM storage does not fill up."""
         try:
             self.dev.command("AT+CMGD=1,2", 3)
         except Exception:
@@ -287,16 +328,19 @@ class SerialWorker(threading.Thread):
         try:
             self.dev.command(f"AT+CMGD={index}", 5)
         except Exception:
-            log.warning("删除短信 %s 失败", index)
+            log.warning("Failed to delete SMS at %s", index)
 
-    # ---------- 发短信 ----------
+    # ---------- send SMS ----------
 
     def send(self, message_id: int, number: str, content: str):
-        self._send_queue.append((message_id, number, content))
+        self._send_queue.put((message_id, number, content))
 
     def _process_send_queue(self):
-        while self._send_queue and self.dev and self.dev.connected:
-            mid, number, content = self._send_queue.pop(0)
+        while self.dev and self.dev.connected:
+            try:
+                mid, number, content = self._send_queue.get_nowait()
+            except queue.Empty:
+                return
             self.db.execute(
                 "UPDATE messages SET status='sending' WHERE id=?", (mid,)
             )
@@ -313,10 +357,19 @@ class SerialWorker(threading.Thread):
                     "UPDATE messages SET status=?, raw=? WHERE id=?",
                     ("sent" if ok else "failed", f"[{charset}] {raw}".strip()[:1000], mid),
                 )
-                log.info("发送短信 #%s 到 %s: %s", mid, number, "OK" if ok else f"FAIL {err}")
+                log.info("Sent SMS #%s to %s: %s", mid, number, "OK" if ok else f"FAIL {err}")
+                self._emit_send_result(mid, ok)
             except Exception as exc:
                 self.db.execute(
                     "UPDATE messages SET status='failed', raw=? WHERE id=?",
                     (str(exc)[:1000], mid),
                 )
-                log.warning("发送短信 #%s 异常: %s", mid, exc)
+                log.warning("Send SMS #%s exception: %s", mid, exc)
+                self._emit_send_result(mid, False)
+
+    def _emit_send_result(self, message_id: int, ok: bool):
+        try:
+            if self.on_send_result:
+                self.on_send_result(message_id, ok)
+        except Exception:
+            log.exception("on_send_result callback failed")

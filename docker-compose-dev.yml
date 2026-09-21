@@ -1,18 +1,16 @@
 services:
   air780e-bridge:
-    image: ghcr.io/znhocn/air780e-bridge:latest
+    build: .
     container_name: air780e-bridge
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
     ports:
-      - 8000:8000
+      - 8104:8000
     devices:
-      - /dev/ttyACM0:/dev/ttyACM0
+      # 把 19d1:0001（BYD EigenComm Compo）的 AT 串口映射进容器
       - /dev/ttyACM1:/dev/ttyACM1
       - /dev/ttyACM2:/dev/ttyACM2
+      - /dev/ttyACM3:/dev/ttyACM3
     volumes:
-      - data:/data
-
-volumes:
-  data:
+      - ./data:/data

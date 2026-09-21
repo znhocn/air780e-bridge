@@ -1,4 +1,4 @@
-"""FastAPI 应用入口"""
+"""FastAPI application entrypoint"""
 
 import logging
 import os
@@ -8,18 +8,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .api import auth, device, keys, messages, notify
-from .auth import hash_password
+from .api import auth, contacts, device, keys, messages, notify, tasks
 from .config import settings
 from .database import Database
+from .version import __version__
 from .forwarder import Forwarder
+from .scheduler import SchedulerService
 from .worker import SerialWorker
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
-log = logging.getLogger("air780")
+log = logging.getLogger("air780e")
 
 
 def _prepare_jwt_secret(db):
@@ -33,59 +34,57 @@ def _prepare_jwt_secret(db):
     db.execute("INSERT INTO settings (key, value) VALUES ('jwt_secret', ?)", (settings.jwt_secret,))
 
 
-def _seed_legacy_admin(db):
-    """兼容旧部署：设置了 ADMIN_PASSWORD 且尚无任何管理员时，播种 admin 账号。"""
-    if not settings.admin_password:
-        return
-    if db.row("SELECT id FROM admins LIMIT 1"):
-        return
-    salt, ph = hash_password(settings.admin_password)
-    db.execute(
-        "INSERT INTO admins (username, password_hash, salt) VALUES ('admin',?,?)",
-        (ph, salt),
-    )
-    log.info("已通过 ADMIN_PASSWORD 播种管理员账号 admin（旧部署兼容）")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(os.path.dirname(os.path.abspath(settings.db_path)), exist_ok=True)
     db = Database(settings.db_path)
     app.state.db = db
     _prepare_jwt_secret(db)
-    _seed_legacy_admin(db)
     admin_cnt = db.row("SELECT COUNT(*) AS c FROM admins")["c"]
     if admin_cnt == 0:
-        log.info("首次部署：请在浏览器打开管理页并创建管理员账户")
+        log.info("First deployment: open the admin page in a browser to create the admin account")
     forwarder = Forwarder()
     app.state.forwarder = forwarder
     worker = SerialWorker(
         db,
         forwarder,
-        on_message=lambda m: log.info("消息回调 #%s", m.get("id")),
+        on_message=lambda m: log.info("message callback #%s", m.get("id")),
     )
     app.state.worker = worker
+    scheduler = SchedulerService(db, worker)
+    worker.on_send_result = scheduler.on_send_result
+    app.state.scheduler = scheduler
     worker.start()
-    log.info("Air780 短信桥已启动 (db=%s, port=%s)", settings.db_path, settings.device_port)
+    scheduler.start()
+    log.info("Air780E SMS Bridge started (db=%s, port=%s)", settings.db_path, settings.device_port)
     yield
+    scheduler.stop()
     worker.stop()
     worker.join(timeout=3)
-    log.info("已停止")
+    scheduler.join(timeout=3)
+    log.info("Stopped")
 
 
-app = FastAPI(title="Air780 短信桥", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Air780E SMS Bridge", version=__version__, lifespan=lifespan)
 
 app.include_router(auth.router)
 app.include_router(messages.router)
 app.include_router(device.router)
 app.include_router(keys.router)
 app.include_router(notify.router)
+app.include_router(tasks.router)
+app.include_router(contacts.router)
 
 
 @app.get("/api/health")
 def health():
     w = getattr(app.state, "worker", None)
     return {"ok": True, "worker": w.status() if w else None}
+
+
+@app.get("/api/version")
+def version():
+    return {"version": __version__}
 
 
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")

@@ -5,6 +5,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv
 
+# PyPI 直连（files.pythonhosted.org）常超时/断流导致打包失败，默认改用中国大陆镜像。
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PIP_INDEX_URL=$PIP_INDEX_URL
+
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime

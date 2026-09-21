@@ -1,4 +1,4 @@
-"""通知配置与转发日志（管理端认证）"""
+"""Notify configs and forward logs (admin auth)"""
 
 import json
 
@@ -10,21 +10,24 @@ from ..forwarder import CHANNEL_FIELDS, CHANNEL_LABELS, build_apprise_url, targe
 
 router = APIRouter(prefix="/api", tags=["notify"])
 
-CHANNEL_TYPES = {"dingtalk", "wecom", "feishu", "email", "webhook"}
+CHANNEL_TYPES = {"dingtalk", "wecom", "feishu", "telegram", "email", "webhook", "apprise"}
 
 
 def _validate(type_: str, params: dict):
     if type_ not in CHANNEL_TYPES:
-        raise HTTPException(422, f"不支持的渠道: {type_}")
+        raise HTTPException(422, f"Unsupported channel: {type_}")
     required = [f["key"] for f in CHANNEL_FIELDS[type_] if f.get("required")]
     for k in required:
         if not str(params.get(k) or "").strip():
-            raise HTTPException(422, f"缺少必要参数: {k}")
+            raise HTTPException(422, f"Missing required param: {k}")
     if type_ != "webhook":
-        build_apprise_url(type_, params)  # 结构校验，无法构成 Apprise 地址时直接 422
+        try:
+            build_apprise_url(type_, params)  # structural validation; 422 if the Apprise URL cannot be built
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
 
-def _row_out(db, cfg: dict) -> dict:
+def _row_out(cfg: dict) -> dict:
     try:
         params = json.loads(cfg.get("params") or "{}") or {}
     except (TypeError, json.JSONDecodeError):
@@ -54,7 +57,7 @@ def notify_types():
 @router.get("/notify-configs", dependencies=[Depends(authenticate)])
 def list_configs(request: Request):
     db = request.app.state.db
-    return [_row_out(db, r) for r in db.rows("SELECT * FROM notify_configs ORDER BY id")]
+    return [_row_out(r) for r in db.rows("SELECT * FROM notify_configs ORDER BY id")]
 
 
 @router.post("/notify-configs", dependencies=[Depends(authenticate)], status_code=201)
@@ -74,7 +77,7 @@ def create_config(body: schema.NotifyIn, request: Request):
             json.dumps(body.params, ensure_ascii=False),
         ),
     )
-    return _row_out(db, db.row("SELECT * FROM notify_configs WHERE id=?", (mid,)))
+    return _row_out(db.row("SELECT * FROM notify_configs WHERE id=?", (mid,)))
 
 
 @router.put("/notify-configs/{cfg_id}", dependencies=[Depends(authenticate)])
@@ -83,7 +86,7 @@ def update_config(cfg_id: int, body: schema.NotifyIn, request: Request):
     _validate(body.type, body.params)
     db = request.app.state.db
     if not db.row("SELECT id FROM notify_configs WHERE id=?", (cfg_id,)):
-        raise HTTPException(404, "通知配置不存在")
+        raise HTTPException(404, "Notify config not found")
     db.execute(
         "UPDATE notify_configs SET name=?, type=?, enabled=?, match_from=?, match_contains=?, params=? WHERE id=?",
         (
@@ -96,14 +99,14 @@ def update_config(cfg_id: int, body: schema.NotifyIn, request: Request):
             cfg_id,
         ),
     )
-    return _row_out(db, db.row("SELECT * FROM notify_configs WHERE id=?", (cfg_id,)))
+    return _row_out(db.row("SELECT * FROM notify_configs WHERE id=?", (cfg_id,)))
 
 
 @router.delete("/notify-configs/{cfg_id}", dependencies=[Depends(authenticate)])
 def delete_config(cfg_id: int, request: Request):
     db = request.app.state.db
     if not db.row("SELECT id FROM notify_configs WHERE id=?", (cfg_id,)):
-        raise HTTPException(404, "通知配置不存在")
+        raise HTTPException(404, "Notify config not found")
     db.execute("DELETE FROM notify_configs WHERE id=?", (cfg_id,))
     return {"ok": True}
 
@@ -113,7 +116,7 @@ def test_config(cfg_id: int, request: Request):
     db = request.app.state.db
     cfg = db.row("SELECT * FROM notify_configs WHERE id=?", (cfg_id,))
     if not cfg:
-        raise HTTPException(404, "通知配置不存在")
+        raise HTTPException(404, "Notify config not found")
     forwarder = request.app.state.forwarder
     return forwarder.test(db, cfg)
 

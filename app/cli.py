@@ -1,9 +1,9 @@
-"""命令行工具：不经过 Web 服务，直接通过串口调试网关。
+"""CLI tool: debug the gateway over serial without going through the web service.
 
-用法：
+Usage:
     python -m app.cli status
-    python -m app.cli send 10086 "hello"        # 测试发给 10086 请用实际 SIM
-    python -m app.cli probe                      # 探测所有候选串口
+    python -m app.cli send 10086 "hello"        # testing: use a real SIM for 10086
+    python -m app.cli probe                      # probe all candidate serial ports
 """
 
 import logging
@@ -30,7 +30,7 @@ def cmd_probe():
             d.open()
             r = d.command("AT", 4)
             d.close()
-            print(f"{port}: {'OK' if r.ok else '无响应'}")
+            print(f"{port}: {'OK' if r.ok else 'no response'}")
         except Exception as e:
             print(f"{port}: {e}")
 
@@ -52,7 +52,7 @@ def cmd_send(number, content):
         charset, results = dev.send_sms(number, content)
         for r in results:
             print("  ->", " | ".join(r.lines), "OK" if r.ok else "FAIL")
-        print(f"编码: {charset}")
+        print(f"charset: {charset}")
     finally:
         dev.close()
 

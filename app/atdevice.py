@@ -1,21 +1,23 @@
-"""串口 AT 命令层（3GPP 27.005 / 27.007）
+"""Serial AT command layer (3GPP 27.005 / 27.007).
 
-设计要点：
-- 单读线程解析行，命令请求/响应通过 CommandResult 传递
-- 一条命令锁串行化，避免与其他命令交错
-- 支持 CMGS 的 ">" 提示符与 GMT/UCS2 双字符集
-- 读线程异常时通过 on_fatal 回调通知上层断线
+Design notes:
+- A single reader thread parses lines; command request/response flows through CommandResult
+- A per-command lock serializes commands so responses never interleave
+- Supports the CMGS ">" prompt and the GSM/UCS2 charsets
+- On reader thread failure, on_fatal callback notifies the upper layer of a disconnect
 """
 
 import logging
 import re
 import threading
+import time
 
 import serial
 
-log = logging.getLogger("air780.at")
+log = logging.getLogger("air780e.at")
 
 FINAL_RE = re.compile(r"^(OK|ERROR|\+CME ERROR:.*|\+CMS ERROR:.*)$")
+CLIP_RE = re.compile(r'^\+CLIP:\s*"([^"]*)"')
 
 
 def ucs2_hex(text: str) -> str:
@@ -38,7 +40,7 @@ class CommandError(RuntimeError):
 
 
 class CommandResult:
-    """一次命令交换的收集结果。"""
+    """Result collector for a single command exchange."""
 
     def __init__(self, timeout: float):
         self.timeout = timeout
@@ -74,9 +76,11 @@ class ATDevice:
         self.ser: serial.Serial | None = None
         self._lock = threading.Lock()
         self._current: CommandResult | None = None
+        self._charset: str | None = None  # last applied CSCS, to avoid redundant switches
         self._running = False
         self._thread: threading.Thread | None = None
         self.on_fatal = None  # callable(exc)
+        self.on_call = None  # callable(number) - incoming call (from +CLIP)
 
     def open(self):
         self.close()
@@ -86,7 +90,7 @@ class ATDevice:
             target=self._read_loop, daemon=True, name="at-reader"
         )
         self._thread.start()
-        log.info("串口已打开 %s @%d", self.port, self.baudrate)
+        log.info("Serial opened %s @%d", self.port, self.baudrate)
         return self
 
     def close(self):
@@ -116,7 +120,7 @@ class ATDevice:
             try:
                 raw = self.ser.readline()
             except Exception as exc:
-                log.warning("串口读失败: %s", exc)
+                log.warning("Serial read failed: %s", exc)
                 cb = self.on_fatal
                 self._running = False
                 if cb:
@@ -133,6 +137,12 @@ class ATDevice:
             self._handle(text)
 
     def _handle(self, text: str):
+        # Incoming-call events may arrive at any time (also mid-command); handle
+        # them right away and keep them out of command results.
+        m = CLIP_RE.match(text.strip())
+        if m:
+            self._emit_call(m.group(1))
+            return
         cur = self._current
         if cur is not None:
             if text.strip() == ">" and not cur.prompt.is_set():
@@ -146,33 +156,53 @@ class ATDevice:
             if FINAL_RE.match(text):
                 cur.done.set()
         else:
-            # 空闲期的异步上报（如 +CMTI），由上层轮询兜底
+            # Unsolicited notifications during idle (e.g. +CMTI); upper layer polls as a fallback
             log.debug("unsolicited: %s", text)
+
+    def _emit_call(self, number: str):
+        try:
+            if self.on_call:
+                self.on_call(number.strip())
+        except Exception:
+            log.exception("on_call callback failed")
+
+    def _wait_prompt(self, cur: CommandResult, timeout: float) -> bool:
+        """Wait for the CMGS '>' prompt; fail fast if a final line (OK/ERROR) arrives first."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cur.prompt.is_set():
+                return True
+            if cur.done.is_set():
+                return False
+            cur.done.wait(0.2)
+        return False
 
     def _submit(self, cmd: str, timeout: float) -> CommandResult:
         cur = CommandResult(timeout)
         cur.echo = cmd
         self._current = cur
-        self._write((cmd + "\r").encode())
-        cur.wait()
-        self._current = None
+        try:
+            self._write((cmd + "\r").encode())
+            cur.wait()
+        finally:
+            self._current = None
         return cur
 
     def command(self, cmd: str, timeout: float = 5.0) -> CommandResult:
-        """发送一条简单命令并返回结果。"""
+        """Send a simple command and return the result."""
         with self._lock:
             if not self.connected:
-                raise CommandError("设备未连接")
+                raise CommandError("Device not connected")
             return self._submit(cmd, timeout)
 
     def send_sms(self, number: str, content: str, wait: float = 70.0):
-        """发送短信，支持中文。按字符自动选择 GSM/UCS2 编码，返回结果列表。
+        """Send an SMS; supports Chinese. Auto-selects GSM/UCS2 encoding per content.
 
-        返回 (charset, results)，results 为每段的 CommandResult。
+        Returns (charset, results); results holds one CommandResult per segment.
         """
         number = number.strip()
         if not number:
-            raise ValueError("号码为空")
+            raise ValueError("Number is empty")
         pure_ascii = all(ord(c) < 128 for c in number + content)
         charset = "GSM" if pure_ascii else "UCS2"
         seg_len = 160 if pure_ascii else 67
@@ -182,31 +212,36 @@ class ATDevice:
 
         with self._lock:
             if not self.connected:
-                raise CommandError("设备未连接")
-            res = self._submit(f'AT+CSCS="{charset}"', 5)
-            if not res.ok:
-                raise CommandError(f"设置字符集失败: {res.error_text()}")
+                raise CommandError("Device not connected")
+            if charset != self._charset:
+                res = self._submit(f'AT+CSCS="{charset}"', 5)
+                if not res.ok:
+                    raise CommandError(f"Failed to set charset: {res.error_text()}")
+                self._charset = charset
 
             addr = number if pure_ascii else ucs2_hex(number)
             results = []
-            for body in pieces:
-                cur = CommandResult(wait)
-                cmd = f'AT+CMGS="{addr}"'
-                cur.echo = cmd
-                self._current = cur
-                self._write((cmd + "\r").encode())
-                if not cur.prompt.wait(25):
-                    cur.timed_out = True
-                    self._write(b"\x1b")  # ESC 退出
-                    cur.done.set()
+            try:
+                for body in pieces:
+                    cur = CommandResult(wait)
+                    cmd = f'AT+CMGS="{addr}"'
+                    cur.echo = cmd
+                    self._current = cur
+                    self._write((cmd + "\r").encode())
+                    if not self._wait_prompt(cur, 25):
+                        if not cur.done.is_set():
+                            cur.timed_out = True
+                            self._write(b"\x1b")  # ESC to abort
+                        cur.done.set()
+                        results.append(cur)
+                        break
+                    payload = body if pure_ascii else ucs2_hex(body)
+                    self._write(payload.encode())
+                    self._write(b"\x1a")  # ctrl-Z to submit
+                    cur.wait()
                     results.append(cur)
-                    break
-                payload = body if pure_ascii else ucs2_hex(body)
-                self._write(payload.encode())
-                self._write(b"\x1a")  # ctrl-Z 提交
-                cur.wait()
-                results.append(cur)
+                    if not cur.ok:
+                        break
+            finally:
                 self._current = None
-                if not cur.ok:
-                    break
             return charset, results

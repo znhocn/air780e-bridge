@@ -1,79 +1,33 @@
-# Air780E 短信转发桥
+# Air780E SMS Bridge
 
-基于 **Air780E（合宙 4G Cat.1）模组** 的短信收发/转发服务，通过 **USB 串口 AT 命令** 与模组通信（本设备 USB ID `19d1:0001` BYD EigenComm Compo），提供 RESTful API 与 Web 管理页面。
+> English | **[简体中文](README.zh-CN.md)**
 
-> 项目只使用短信类 AT 命令（`AT+CMGF` / `AT+CMGS` / `AT+CMGL` / `AT+CMGD` 等），**不启用 PPP/NCM 数据拨号，不消耗 SIM 卡流量**。
+An SMS receive / forward bridge built on the **Luat Air780E (4G Cat.1) module**. It talks to the module over a **USB serial port using AT commands** (USB ID `19d1:0001`, BYD EigenComm Compo) and exposes a **REST API** plus a **web management page**: incoming SMS are archived to storage automatically and forwarded to DingTalk / WeCom / Feishu / Telegram / Email / Webhook; it also supports sending SMS and scheduled SMS tasks.
 
-## 功能
+> This project only uses SMS-related AT commands (`AT+CMGF` / `AT+CMGS` / `AT+CMGL` / `AT+CMGD` / `AT+CNMI` / `AT+CLIP`, etc.). **PPP/NCM data dial-up is never enabled, so it consumes no SIM data traffic.**
 
-- 接收短信：轮询 `AT+CMGL` 读新短信，**全部入库 SQLite 后**逐条删除并定时 `AT+CMGD=1,2` 清理设备存储，不会长期占用模组/SIM 存储
-- 发送短信：REST 接口**先入库**，后台串行发送，自动切换 GSM 7bit / UCS2（支持中文、长短信自动分段）
-- 通知：钉钉 / 企业微信（群机器人）/ 飞书 / Email 各自独立配置，**底层统一使用 Apprise**；Webhook 为独立 HTTP 推送配置
-- 串口通信：`pyserial` 单读者线程 + 命令锁，支持断线自动重连、FTDI/cdc_acm 均可
-- 数据库：SQLite（WAL），存短信、通知配置、API 密钥、转发日志
-- 后端：FastAPI + Uvicorn
-- 前端：静态单页管理（状态/收发/通知/密钥/日志），JWT 登录
-- API：RESTful，Bearer API Key 鉴权，可在页面创建/吊销密钥（含最近使用时间）
-- 打包：Docker / docker-compose，串口直通容器，数据卷持久化
+## Highlights
 
-## 目录结构
+- **Receive SMS**: poll `AT+CMGL=4` → de-duplicate → store in SQLite (WAL) → forward per config → delete one by one; nothing is kept in module/SIM storage
+- **Send SMS**: queued via REST, sent serially in the background, auto-switches between GSM 7-bit (160 chars/message) and UCS2 (67 chars/message, Chinese/long SMS automatically split into segments)
+- **Notification forwarding**: DingTalk / WeCom (group bot) / Feishu / Telegram / Email, all delivered through **Apprise** underneath; a dedicated **Webhook HTTP push** and arbitrary **Apprise URL** channels are also available
+- **Scheduled tasks**: send SMS on a daily interval (`interval_days`), with manual instant trigger
+- **Contacts**: map numbers ↔ display names, shown directly in the conversation view
+- **SMS gateway**: send and query SMS through the REST API to act as your own gateway
+- **Self-healing**: auto-reconnect on disconnect; a command lock + single reader thread avoid clashes with polling
+- **Frontend**: static single-page app (status / messages / conversations / notifications / keys / tasks / contacts / logs), JWT login with password change
+- **API**: RESTful with Bearer auth (admin JWT or API key); keys can be created/revoked (with last-used timestamp)
 
-```
-app/
-  main.py        FastAPI 入口（lifespan 启动 worker）
-  atdevice.py    串口 AT 层（命令锁、超时、CMGS 提示符、UCS2）
-  worker.py      后台线程：重连、轮询收短信、发送队列、状态
-  forwarder.py   通知转发器（Apprise 钉钉/企微/飞书/Email + Webhook）
-  database.py    SQLite（线程安全、WAL）
-  auth.py        管理端 JWT + API Key 鉴权
-  api/           REST 路由（messages/device/keys/notify/auth）
-  static/        前端单页（index.html / app.js / style.css）
-  cli.py         不经 Web 直接调试硬件的命令行
-udev/            串口权限/避让 ModemManager 规则
-scripts/         test_send_10086.sh 测试发送到 10086
-```
+## Quick Start
 
-## 硬件准备
-
-1. 把 Air780E 串口板通过 USB 接入主机，确认枚举为 `19d1:0001`：
-   ```bash
-   lsusb   # Bus ... ID 19d1:0001 BYD EigenComm Compo
-   ls /dev/ttyACM*
-   ```
-   本板枚举为 3 个 CDC-ACM 口（`ttyACM0/1/2`），其中一个（或两个）是 AT 命令口，`ttyACM1` 是数据/诊断口。
-2. 安装 udev 规则（普通用户可访问 + 标记为 AT 主端口，避免 ModemManager 抢占）：
-   ```bash
-   sudo cp udev/99-air780-eigencomm.rules /etc/udev/rules.d/
-   sudo udevadm control --reload && sudo udevadm trigger
-   sudo usermod -aG dialout $USER   # 重新登录生效
-   ```
-3. 插入 SIM 卡。确认注册与信号：
-   ```bash
-   .venv/bin/python -m app.cli status     # 应有 +CREG: 0,1(或5) 与 +CSQ 非 99
-   ```
-
-> 若无法访问串口，检查：`ls -l /dev/ttyACM*` 属组是否为 `dialout`；ModemManager 是否占用：
-> `systemctl stop ModemManager` 或按 udev 规则中的 `ID_MM_PORT_TYPE_AT_PRIMARY` 标记。
-
-## 本地运行
+### Docker
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-DB_PATH=./data/bridge.db \
-    .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
+# Pull the image directly
+docker pull ghcr.io/znhocn/air780e-bridge:latest
 
-打开 http://localhost:8000 ，**首次部署**页面会引导创建管理员账户（用户名 + 密码），之后每次用该账户登录。管理员账号哈希后保存在数据库 `admins` 表。
-
-## Docker 运行
-
-```bash
-# 构建
-docker build -t air780-bridge:latest .
-
-# 直接运行（把设备串口映射进容器）
-docker run -d --name air780-bridge --restart unless-stopped \
+# Run (map the device serial ports into the container)
+docker run -d --name air780e-bridge --restart unless-stopped \
   --device /dev/ttyACM0:/dev/ttyACM0 \
   --device /dev/ttyACM1:/dev/ttyACM1 \
   --device /dev/ttyACM2:/dev/ttyACM2 \
@@ -81,97 +35,128 @@ docker run -d --name air780-bridge --restart unless-stopped \
   -e DEVICE_PORT=auto \
   -e JWT_SECRET=your-own-random-string \
   -v $(pwd)/data:/data \
-  air780-bridge:latest
-
-# 或使用编排
-docker compose up -d --build
+  air780e-bridge:latest
 ```
 
-`docker-compose.yml` 不再内嵌 `environment`，全部走代码内置默认值（串口自动探测、`DB_PATH=/data/bridge.db`、`JWT_SECRET` 首次启动自动生成并入库），开箱即用。需要自定义时，在 `docker-compose.yml` 补一段 `environment:`，或改用 `docker run -e` 覆盖上面的配置项。
+### Docker Compose (recommended)
 
-> **首次部署不需要配置密码**：打开 http://<主机>:8888 ，页面显示「创建管理员账户」，填入用户名和至少 8 位密码即完成，成功后自动进入管理界面。
+`docker-compose.yml` embeds `TZ: Asia/Shanghai`, maps host port **8000** → container **8000**, and mounts a data volume `data:/data`; everything else uses sensible defaults out of the box.
 
-## 配置项（环境变量）
+```bash
+# Create a directory
+mkdir air780e-bridge && cd air780e-bridge/
 
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `DEVICE_PORT` | `auto` | 串口名；`auto` 时在 `DEVICE_PROBE_PORTS` 里探测第一个响应 `AT` 的口 |
-| `DEVICE_PROBE_PORTS` | `/dev/ttyACM0,/dev/ttyACM1,/dev/ttyACM2` | 自动探测候选列表 |
-| `DEVICE_BAUDRATE` | `115200` | 波特率 |
-| `DB_PATH` | `/data/bridge.db` | SQLite 路径（容器内建议挂载 `/data` 卷），**含管理员账户** |
-| `ADMIN_PASSWORD` | 空 | 可选，兼容旧部署：设置后启动时播种一个名为 `admin` 的账户（仅当库中无任何管理员时） |
-| `JWT_SECRET` | 首次启动自动生成并入库 | 管理端 JWT 签名密钥（重启不失效） |
-| `JWT_EXPIRES_HOURS` | `72` | 管理端登录有效期 |
-| `POLL_INTERVAL` | `5` | 收短信轮询间隔（秒） |
+# Download docker-compose.yml
+wget https://github.com/znhocn/air780e-bridge/raw/refs/heads/main/docker-compose.yml
+
+# Run
+docker compose up -d
+```
+
+### First-time Deployment
+
+Open `http://<host>:8000`:
+- When no admin exists yet, the page guides you to **create an admin account** (username + password of at least 8 characters); you are logged in automatically after success;
+- Afterwards, log in with that account; the management UI calls the API with its JWT.
+
+### Hardware Setup (Serial Port & SIM)
+
+1. Plug the Air780E serial board into the host via USB and confirm enumeration:
+
+   ```bash
+   lsusb   # Bus ... ID 19d1:0001 BYD EigenComm Compo
+   ls /dev/ttyACM*
+   ```
+
+   The board enumerates as 3 CDC-ACM ports (`ttyACM0/1/2`). `ttyACM0` and `ttyACM2` both work as AT ports; `ttyACM1` is the data/diagnostic port.
+
+2. Install the udev rules (ordinary-user access + mark the primary AT port, preventing ModemManager from grabbing it):
+
+   ```bash
+   sudo udevadm control --reload && sudo udevadm trigger
+   sudo usermod -aG dialout $USER   # effective after re-login
+   ```
+
+3. Insert the SIM card and verify quickly from the CLI:
+
+   ```bash
+   .venv/bin/python -m app.cli status    # expect +CREG: 0,1 (or 5) and +CSQ other than 99
+   .venv/bin/python -m app.cli probe     # probe each serial port for an AT response
+   ```
+
+## Usage (Management Page)
+
+- **Status**: connection / serial port / IMEI / ICCID / SIM / operator / signal (`CSQ` and dBm) / registration state, plus today's in/out/failed message counts and incoming-call stats
+- **Messages**: full in/out history (including the raw AT response `raw`), per-number conversation view (contact names shown automatically), with search / pagination / scroll-up loading
+- **Send**: type in a number and content to send instantly; status updates live as `queued → sending → sent/failed`
+- **Notification settings**: configure forwarding channels and match filters one by one, with a "test" push anytime
+- **API keys**: create / revoke / restore keys and view last-used time (the plaintext key is shown only once at creation)
+- **Scheduled tasks**: periodic sends (days), with manual instant trigger
+- **Contacts**: number ↔ name ↔ note
+- **Logs**: `/api/forward-logs` shown in the UI (channel, config name, masked target, success/failure, error message)
+- **About**: the version number is shown at the bottom-left of the page (same source as `/api/version`)
 
 ## REST API
 
-鉴权头统一为 `Authorization: Bearer <token>`，token 两种都接受：
+See the [API documentation](docs/API.md) (Chinese).
 
-- **管理端 JWT**：`POST /api/auth/login` 用用户名/密码换取，Web 管理页面登录后自动携带；
-- **API Key**：在页面「API 密钥」创建（仅显示一次），供外部脚本/第三方调用。
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET  | `/api/auth/setup-required` | 首次部署探测：`true` 表示尚无管理员，需先创建 |
-| POST | `/api/auth/setup` | 创建首个管理员 `{username, password}`（仅当库中无管理员时可用），返回 JWT |
-| POST | `/api/auth/login` | 管理端登录（body: `{username, password}`），返回 JWT |
-| GET  | `/api/messages?direction=in\|out&page=1&page_size=50&q=` | 短信列表 |
-| GET  | `/api/messages/{id}` | 短信详情（含 AT 原始返回） |
-| POST | `/api/messages/send` | 发送短信 `{to, content}`，返回 `{id,status:"queued"}` |
-| GET  | `/api/device/status` | 设备状态（连接/IMEI/信号/运营商/注册） |
-| POST | `/api/device/reconnect` | 请求重连串口 |
-| GET  | `/api/keys` | 密钥列表（含最近使用时间，管理端 JWT） |
-| POST | `/api/keys` | 创建密钥 `{name}`，返回明文 key 一次 |
-| DELETE | `/api/keys/{id}` | 吊销密钥 |
-| POST | `/api/keys/{id}/enable` | 恢复密钥 |
-| GET  | `/api/notify-configs/types` | 各通知渠道的配置字段定义（供前端渲染表单） |
-| GET  | `/api/notify-configs` | 通知配置列表（含脱敏目标） |
-| POST | `/api/notify-configs` | 新增通知配置 `{name,type,enabled,match_from,match_contains,params}` |
-| PUT  | `/api/notify-configs/{id}` | 修改通知配置 |
-| DELETE | `/api/notify-configs/{id}` | 删除通知配置 |
-| POST | `/api/notify-configs/{id}/test` | 推送一条测试通知并记录日志 |
-| GET  | `/api/forward-logs` | 转发/通知日志 |
-
-### 发送示例（测试发给 10086）
+### Send Example (test against 10086)
 
 ```bash
 curl -X POST http://localhost:8000/api/messages/send \
   -H "Authorization: Bearer <API_KEY>" -H "Content-Type: application/json" \
   -d '{"to":"10086","content":"hello"}'
-# 或一键测试脚本
-API_KEY=<API_KEY> ./scripts/test_send_10086.sh "你好"
 ```
 
-发送为异步队列：接口返回 `queued` 后，后台 worker 实际发送，短信状态在列表里变为 `sent` / `failed`（`raw` 字段含 AT 返回，如 `+CMS ERROR: 331` 表示无网络服务/未插 SIM）。
+Sending is an async queue: the endpoint returns `{ "id": …, "status": "queued" }` and the background worker actually sends it; the status later becomes `sent` / `failed` (the `raw` field holds the AT response, e.g. `+CMS ERROR: 331` means no network service / no SIM).
 
-### 通知设置
+## Notification Channels
 
-在页面「通知设置」逐条配置通知渠道。每条配置可设置：
-- **渠道**：`dingtalk`（钉钉）/ `wecom`（企业微信群机器人）/ `feishu`（飞书）/ `email`（Email）/ `webhook`（HTTP）
-- **字段**：随渠道不同（机器人 token/签名、SMTP 服务器/账号/授权码/收发件人、Webhook URL 等），页面按渠道动态渲染；可点「测试」推送一条测试通知
-- **过滤**：`match_from`（发件号码包含子串）、`match_contains`（内容包含子串），留空=不限制，命中才推送
-- **通知内容**：传入的短信（`#id`、来自、时间、正文）
+`type` ∈ `dingtalk` / `wecom` / `feishu` / `telegram` / `email` / `webhook` / `apprise`. Required/optional `params` fields (the form is rendered dynamically in the "Notification settings" page):
 
-钉钉/企微/飞书/Email 底层均通过 Apprise 发送（对应 `dingtalk://`、`wecombot://`、`feishu://`、`mailtos://` 四种自建 Apprise URL，仅作语法校验不在界面暴露）；Webhook 为独立 HTTP POST，推送 JSON：
+| type | required | optional |
+|---|---|---|
+| `dingtalk` | `token` | `secret` (signing), `phone` |
+| `wecom` | `botkey` (key or full webhook URL) | — |
+| `feishu` | `token` (token or full webhook URL) | — |
+| `telegram` | `bot_token`, `chat_id` (may contain `@`) | — |
+| `email` | `smtp_host`, `user`, `password`, `from`, `to` | `smtp_port` (default 587), `mode` (`starttls`/`ssl`) |
+| `webhook` | `url` | — |
+| `apprise` | `url` (full URL of any supported service, e.g. `tgram://`, `slack://`) | — |
+
+- Filtering: `match_from` (sender contains substring), `match_contains` (content contains substring); empty = no restriction, notifications fire only on a match
+- DingTalk / WeCom / Feishu / Telegram / Email are delivered by Apprise (URL structure is validated before saving; the internal URL is not exposed in the UI); Webhook is a standalone HTTP POST (2xx counts as success)
+- Both successful and failed pushes are written to `forward_logs` (channel, config name, masked target, result, error)
+
+Webhook push body:
+
 ```json
-{ "id": 2, "direction": "in", "sender": "10086",
-  "receiver": "", "content": "余额50元", "received_at": "2026-09-20 00:15:45" }
+{ "event": "sms", "direction": "in", "sender": "10086", "receiver": "",
+  "content": "Your balance is 50 yuan", "received_at": "2026-09-20 00:15:45" }
 ```
-推送成功/失败均写入 `forward_logs`（渠道、配置名、脱敏目标、结果、错误）。旧版 `forward_rules` 启动时自动迁移为 `webhook` 类型配置。
 
-## 常见问题
+`event` is `sms` (SMS) or `call` (incoming call, body fixed to `Incoming call`).
 
-- **`+CREG: 0,0` 无法注册 / `+CMS ERROR: 331`**：未插 SIM、SIM 松动或无信号，检查 `AT+CPIN?`（应返回 `+CPIN: READY`；`+CME ERROR: 10` 表示 SIM 未插入）。
-- **无法打开串口 / ModemManager 抢口**：安装 udev 规则；必要时 `systemctl stop ModemManager`。
-- **两个口都响应 AT**：本模组 `ttyACM0` 与 `ttyACM2` 均可作为 AT 口；`DEVICE_PORT` 固定其一即可，其余口请勿同时占用。
-- **SIM 数据流量**：本项目从不发起 `AT+CGDATA` / `AT+CGACT` / PPP，仅走短信 AT 命令，不会消耗数据流量。
-- **收不到短信**：确认 `AT+CMGF=1` 文本模式、`AT+CNMI=2,1,0,0,0`、插入 SIM 后可收任意短信再测试；接收侧每 `POLL_INTERVAL` 秒轮询 `AT+CMGL=4`。
-- **旧版本升级（曾用 ADMIN_PASSWORD）**：老部署升级后，如未设置 `ADMIN_PASSWORD`，首次打开页面会引导你创建管理员账户（旧 env 密码不再生效）；若想沿用，可在环境变量里设置 `ADMIN_PASSWORD=<旧密码>`，启动时自动播种名为 `admin` 的账号（仅当库中无任何管理员时）。
-- **忘记管理员密码**：停容器后手动清库（有数据卷时 `docker volume rm` 需谨慎）或直接操作 SQLite：`UPDATE admins SET password_hash='…', salt='…' WHERE username='…'`（hash 为 PBKDF2-SHA256，可用 `python -c "import hashlib;print(hashlib.pbkdf2_hmac('sha256',b'新密码',bytes.fromhex('盐'),240000).hex())"` 生成）。
+## FAQ
 
-## 技术说明
+- **`+CREG: 0,0` can't register / `+CMS ERROR: 331`**: no SIM, loose SIM, or no signal → check `AT+CPIN?` (should be `+CPIN: READY`; `+CME ERROR: 10` means no card inserted).
+- **Cannot open the serial port / ModemManager grabs it**: install the udev rules; if necessary `systemctl stop ModemManager`.
+- **Both ports respond to AT**: `ttyACM0` and `ttyACM2` both work; pin `DEVICE_PORT` to one of them and don't let another process hold the others.
+- **No SMS received**: confirm `AT+CMGF=1`, `AT+CNMI=2,1,0,0,0`, and that the SIM can receive SMS normally; on the receive side `AT+CMGL=4` is polled every `POLL_INTERVAL` seconds.
+- **No data consumption**: the project never issues `AT+CGDATA` / `AT+CGACT` or PPP — it only uses SMS AT commands.
+- **Forgot admin password**: edit SQLite directly with `UPDATE admins SET password_hash='…', salt='…' WHERE username='…'` (PBKDF2-SHA256, 240000 rounds; generate with `python -c "import hashlib;print(hashlib.pbkdf2_hmac('sha256',b'new_password',bytes.fromhex('salt'),240000).hex())"`).
 
-- 收短信：`AT+CMGL=4` 拉取全部短信 → 解析（含引号内逗号的时间戳）→ 去重（10 分钟内同号码同内容）→ **入库 SQLite** → 按通知配置推送 → 逐条 `AT+CMGD` 删除 → 每次轮询后再 `AT+CMGD=1,2` 清掉已读+已发送残留。短信与日志只存在于 SQLite，设备/SIM 存储不保留。
-- 发短信：按内容是否含非 ASCII 自动选 `CSCS="GSM"`（160 字符/条）或 `CSCS="UCS2"`（67 字符/条，中文/长短信自动分段），通过 `AT+CMGS` + ctrl-Z 提交；一条锁串行发送，避免与轮询撞车。
-- 串口层：读线程 + `CommandResult` 事件模型；命令带超时；读异常触发 `on_fatal`，worker 自动重连整个握手。
+## Technical Notes
+
+- **Receiving**: poll `AT+CMGL=4` every `POLL_INTERVAL` → parse (handles timestamps with commas inside quotes) → de-duplicate (same number + same content within 10 minutes) → store as `stored` → push per config → delete one by one with `AT+CMGD` → then `AT+CMGD=1,2` to purge read/sent leftovers. Messages and logs live only in SQLite; nothing is kept in module/SIM storage.
+- **Sending**: auto-selects `CSCS="GSM"` (160 chars/message) or `CSCS="UCS2"` (67 chars/message; Chinese/long SMS automatically split) based on whether the content contains non-ASCII characters, then submits via `AT+CMGS` + ctrl-Z; a command lock serializes sends to avoid clashing with polling.
+- **Status collection**: `AT+CSQ` (signal), `AT+CREG?` (`0`/`1`/`5`), `AT+COPS?`, `AT+CGMM/CGMR/CGSN`, `AT+CPIN?`, `AT+CCID`, once per `STATUS_INTERVAL`.
+- **Self-healing on disconnect**: a read exception triggers `on_fatal`; the worker auto-reconnects every `CONNECT_RETRY_INTERVAL` and re-runs the handshake (`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`).
+- **Incoming-call notifications**: `+CLIP` event (de-duplicated for the same caller within 120 seconds) → pushes a "call" notification and is counted in `calls_total`.
+
+## Air780E Reference Documentation
+
+- [Luat Air780E module resource center](https://docs.openluat.com/air780e/)
+- [Air780E AT command manual](https://docs.openluat.com/air780e/at/app/at_command/)
+- [Air780E AT firmware versions](https://docs.openluat.com/air780e/at/firmware/)
+- [LuaTools download and usage](https://docs.openluat.com/common/Luatools/)
