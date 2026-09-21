@@ -6,6 +6,8 @@
 
 > 本项目只使用短信类 AT 命令（`AT+CMGF` / `AT+CMGS` / `AT+CMGL` / `AT+CMGD` / `AT+CNMI` / `AT+CLIP` 等），**不启用 PPP/NCM 数据拨号，不消耗 SIM 卡流量**。
 
+![Screenshot_1](docs/img/Screenshot_1.png)
+
 ## 功能亮点
 
 - **收短信**：轮询 `AT+CMGL=4` → 去重 → 入库 SQLite（WAL）→ 按配置转发 → 逐条删除，模组/SIM 存储不保留短信

@@ -6,6 +6,8 @@ An SMS receive / forward bridge built on the **Luat Air780E (4G Cat.1) module**.
 
 > This project only uses SMS-related AT commands (`AT+CMGF` / `AT+CMGS` / `AT+CMGL` / `AT+CMGD` / `AT+CNMI` / `AT+CLIP`, etc.). **PPP/NCM data dial-up is never enabled, so it consumes no SIM data traffic.**
 
+![Screenshot_1](docs/img/Screenshot_1.png)
+
 ## Highlights
 
 - **Receive SMS**: poll `AT+CMGL=4` → de-duplicate → store in SQLite (WAL) → forward per config → delete one by one; nothing is kept in module/SIM storage
