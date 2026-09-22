@@ -34,10 +34,8 @@ docker run -d --name air780e-bridge --restart unless-stopped \
   --device /dev/ttyACM1:/dev/ttyACM1 \
   --device /dev/ttyACM2:/dev/ttyACM2 \
   -p 8000:8000 \
-  -e DEVICE_PORT=auto \
-  -e JWT_SECRET=your-own-random-string \
   -v $(pwd)/data:/data \
-  air780e-bridge:latest
+  ghcr.io/znhocn/air780e-bridge:latest
 ```
 
 ### Docker Compose 运行（推荐）
@@ -150,7 +148,7 @@ Webhook 推送 body：
 
 ## 技术说明
 
-- **收短信**：每 `POLL_INTERVAL` 轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持 `AT+CMGL=4`，会返回 `+CMS ERROR: 500`）→ 解析（处理引号内带逗号的时间戳、UCS2 引号包裹的正文行）→ **长短信拼接**（TEXT 模式会剥掉 UDH，每段都以干净可读文本返回且 SCTS 精确到秒相同；同一轮里同号码 + 相同 SCTS 的分段按序号拼成**一条** → 入库 → 推送一次 → 逐段删除）→ 去重（10 分钟内同号同内容）→ 入库 `stored` → 按配置推送 → 逐条 `AT+CMGD` 删除 → 每轮后再 `AT+CMGD=1,2` 清已读/已发残留。短信与日志只存 SQLite，设备/SIM 存储不保留。
+- **收短信**：每 `POLL_INTERVAL` 切到 **PDU 模式**轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持 `AT+CMGL=4`，会返回 `+CMS ERROR: 500`）→ 解析 SMS-DELIVER/SUBMIT PDU（模组去掉 SCA 首字节）→ **按真实段序号拼接长短信**：每段的 `05 00 03 <ref> <total> <seq>` 连接头在 PDU 里完整保留，按 `(发件号, ref, total)` 分组、`seq` 排序拼成**一条**（网络乱序投递也不会拼错；TEXT 模式下按 SIM 索引拼接会出现乱序）→ 去重（10 分钟内同号同内容）→ 入库 `stored` → 按配置推送 → 逐段 `AT+CMGD` 删除 → 恢复 `AT+CMGF=1` → 每轮后再 `AT+CMGD=1,2` 清残留。短信与日志只存 SQLite，设备/SIM 存储不保留。
 - **发短信**：单条纯 ASCII 走 **TEXT 模式**（`CSCS="GSM"` + `CSMP=17,167,0,0`，160 字符/条）；单条中文走 **PDU 模式**（DCS=8 UCS2，67 字符）。**多条的超长内容一律走 PDU 拼接**（`AT+CMGF=0`，每段一次 `AT+CMGS`，带 `05 00 03 <ref> <total> <seq>` 连接 UDH，发完恢复 `AT+CMGF=1`）：ASCII 用 DCS=0 GSM 7bit（153 字符/段），中文用 DCS=8 UCS2（67 字符/段），收方重组为**一条**长短信。**必须用 PDU 发中文**：Air780E 的 TEXT 模式 `AT+CMGS` 会把正文原样（不转码 hex）当载荷发出，中文会乱码；PDU 由我们自组（SCA=00 用 SIM 短信中心、地址 semi-octet、VP=A7=24h），保证线上编码正确，并已用 `AT+CMGW`/`AT+CMGR` 逐字节回读验证。一条锁串行发送，避免与轮询撞车。
 - **状态采集**：`AT+CSQ`（信号）、`AT+CREG?`（`0`/`1`/`5`）、`AT+COPS?`、`AT+CGMM/CGMR/CGSN`、`AT+CPIN?`、`AT+CCID`，每 `STATUS_INTERVAL` 一次。
 - **断线自愈**：读异常触发 `on_fatal`，worker 每 `CONNECT_RETRY_INTERVAL` 自动重连并重新握手（`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`）。

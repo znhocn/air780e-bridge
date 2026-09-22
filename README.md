@@ -34,10 +34,8 @@ docker run -d --name air780e-bridge --restart unless-stopped \
   --device /dev/ttyACM1:/dev/ttyACM1 \
   --device /dev/ttyACM2:/dev/ttyACM2 \
   -p 8000:8000 \
-  -e DEVICE_PORT=auto \
-  -e JWT_SECRET=your-own-random-string \
   -v $(pwd)/data:/data \
-  air780e-bridge:latest
+  ghcr.io/znhocn/air780e-bridge:latest
 ```
 
 ### Docker Compose (recommended)
@@ -150,7 +148,7 @@ Webhook push body:
 
 ## Technical Notes
 
-- **Receiving**: poll `AT+CMGL` (no argument = REC UNREAD; the Air780E rejects `AT+CMGL=4` with `+CMS ERROR: 500`) every `POLL_INTERVAL` → parse (handles timestamps with commas inside quotes, and body lines wrapped in quotes in UCS2 mode) → **long-SMS assembly** (TEXT mode strips the UDH, each segment arrives as clean readable text with an identical second-granularity SCTS; segments from the same sender with the exact same SCTS seen in one poll are joined in order into a single message → stored → pushed once → deleted per segment) → de-duplicate (same number + same content within 10 minutes) → store as `stored` → push per config → delete one by one with `AT+CMGD` → then `AT+CMGD=1,2` to purge read/sent leftovers. Messages and logs live only in SQLite; nothing is kept in module/SIM storage.
+- **Receiving**: poll `AT+CMGL` (no argument = REC UNREAD; the Air780E rejects `AT+CMGL=4` with `+CMS ERROR: 500`) **in PDU mode** every `POLL_INTERVAL` → parse SMS-DELIVER/SUBMIT PDUs (the module strips the leading SCA octet) → **long-SMS assembly by the real segment sequence number**: every part's `05 00 03 <ref> <total> <seq>` connection header is preserved in the PDU, so parts are grouped by `(sender, ref, total)` and joined by `seq` — true network order even when pages arrive out of sequence (a TEXT-mode, SIM-index join would scramble them) → store as `stored` → push once → delete per segment → restore `AT+CMGF=1` → then `AT+CMGD=1,2` to purge leftovers. Messages and logs live only in SQLite; nothing is kept in module/SIM storage.
 - **Sending**: single-segment pure-ASCII goes through TEXT mode (`CSCS="GSM"` + `CSMP=17,167,0,0`, 160 chars/message); single-segment Chinese goes through PDU mode (DCS=8 UCS2, 67 chars). **Multi-segment content is sent as one concatenated long SMS in PDU mode** (`AT+CMGF=0`, one `AT+CMGS` per segment with a `05 00 03 <ref> <total> <seq>` User Data Header, then TEXT mode restored): ASCII uses DCS=0 GSM-7bit (153 chars/segment), Chinese uses DCS=8 UCS2 (67 chars/segment) — the recipient reassembles everything into a single message. PDU is mandatory for Chinese: on the Air780E the TEXT-mode `AT+CMGS` transmits the payload verbatim (never hex-decodes it), so Chinese sent that way arrives garbled; we build the PDU ourselves (SCA=00 = use the SIM's message center, semi-octet address, VP=A7 = 24h) to guarantee a correct on-air encoding, and verified byte-for-byte via `AT+CMGW`/`AT+CMGR` read-back. A command lock serializes sends to avoid clashing with polling.
 - **Status collection**: `AT+CSQ` (signal), `AT+CREG?` (`0`/`1`/`5`), `AT+COPS?`, `AT+CGMM/CGMR/CGSN`, `AT+CPIN?`, `AT+CCID`, once per `STATUS_INTERVAL`.
 - **Self-healing on disconnect**: a read exception triggers `on_fatal`; the worker auto-reconnects every `CONNECT_RETRY_INTERVAL` and re-runs the handshake (`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`).
