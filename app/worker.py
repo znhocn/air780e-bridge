@@ -79,6 +79,36 @@ def decode_address(raw: str, ucs2: bool) -> str:
     return raw
 
 
+def group_incoming(parts: list) -> list:
+    """Assemble one poll's SMS parts into messages.
+
+    A long (concatenated) SMS is delivered by the network as several
+    segments; Air780E strips the UDH in TEXT mode so segments come out as
+    clean text. Segments of the same multipart share the sender and the
+    exact SMSC timestamp, so parts with the same (sender, scts) are joined in
+    arrival order into a single message. Singletons pass through unchanged.
+    """
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for p in parts:
+        key = (p["sender"], p["scts"])
+        if key not in groups:
+            groups[key] = {"sender": p["sender"], "scts": p["scts"], "parts": []}
+            order.append(key)
+        groups[key]["parts"].append(p)
+    out = []
+    for key in order:
+        g = groups[key]
+        parts = sorted(g["parts"], key=lambda p: int(p["index"]))
+        out.append({
+            "sender": g["sender"],
+            "scts": g["scts"],
+            "indices": [p["index"] for p in parts],
+            "content": "".join(p["content"] for p in parts),
+        })
+    return out
+
+
 class SerialWorker(threading.Thread):
     def __init__(self, db, forwarder, on_message=None):
         super().__init__(daemon=True, name="serial-worker")
@@ -302,29 +332,46 @@ class SerialWorker(threading.Thread):
         res = self.dev.command("AT+CMGL", 8)
         if not res.ok or not any("+CMGL:" in ln for ln in res.lines):
             return
+        parts = []
         for msg in parse_cmgl(res.lines):
             sender = _norm_number(decode_address(msg["address_raw"], self.ucs2))
             content = msg["body"]
             if looks_ucs2(content):
                 content = ucs2_decode(content)
-            scts = msg["scts"] or ""
-            if not self._already_stored(sender, content):
-                mid = self.db.execute(
-                    "INSERT INTO messages (direction, sender, receiver, content, status, raw) "
-                    "VALUES ('in', ?, '', ?, 'stored', ?)",
-                    (sender, content, f"idx={msg['index']} scts={scts}".strip()),
-                )
-                msg_row = self.db.row("SELECT * FROM messages WHERE id=?", (mid,))
-                log.info("Received SMS #%s from %s: %s", mid, sender, content[:40])
-                if self.forwarder:
-                    self.forwarder.forward(self.db, msg_row)
-                if self.on_message:
-                    try:
-                        self.on_message(msg_row)
-                    except Exception:
-                        log.exception("on_message callback failed")
-            self._delete_msg(msg["index"])
+            parts.append({
+                "index": msg["index"],
+                "sender": sender,
+                "content": content,
+                "scts": msg["scts"] or "",
+            })
+        for assembled in group_incoming(parts):
+            self._store_incoming(assembled)
         self._purge_device_messages()
+
+    def _store_incoming(self, assembled: dict):
+        """Store (and notify) one assembled incoming message, then drop its SIM records."""
+        sender = assembled["sender"]
+        content = assembled["content"]
+        scts = assembled["scts"]
+        indices = assembled["indices"]
+        if not self._already_stored(sender, content):
+            mid = self.db.execute(
+                "INSERT INTO messages (direction, sender, receiver, content, status, raw) "
+                "VALUES ('in', ?, '', ?, 'stored', ?)",
+                (sender, content, f"idx={','.join(indices)} scts={scts}".strip()),
+            )
+            msg_row = self.db.row("SELECT * FROM messages WHERE id=?", (mid,))
+            log.info("Received SMS #%s from %s: %s%s", mid, sender, content[:40],
+                     f" ({len(indices)} parts)" if len(indices) > 1 else "")
+            if self.forwarder:
+                self.forwarder.forward(self.db, msg_row)
+            if self.on_message:
+                try:
+                    self.on_message(msg_row)
+                except Exception:
+                    log.exception("on_message callback failed")
+        for index in indices:
+            self._delete_msg(index)
 
     def _purge_device_messages(self):
         """SMS are inserted and deleted one by one; here we purge leftover read+sent entries so SIM storage does not fill up."""

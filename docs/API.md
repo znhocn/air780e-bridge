@@ -225,7 +225,9 @@ Query 参数（全部可选）：
 }
 ```
 
-> `status` 取值：收到的短信为 `stored`；发送为 `queued` / `sending` / `sent` / `failed`。
+> `status` 取值：收到的短信为 `stored`；发送为 `queued` / `sending` / `sent` / `failed`。收到的超长短信（多段分片）会拼接为**一条** `stored` 短信入库。
+
+> 入库短信的 `raw` 字段：发送失败时存 AT 原始返回（如 `[GSM] >|+CMS ERROR: 331`）；收到时存分片序号与时间戳（如 `idx=0,1 scts=26/09/21,19:43:55+32`，单条为 `idx=2 scts=26/09/21,19:44:01+32`）。
 > 传了 `peer` 时走“聊天窗口”分页：固定取该号码**最新一页**，按时间从旧到新返回（便于直接渲染聊天界面）。
 
 ### GET /api/messages/conversations
@@ -277,6 +279,8 @@ Query 参数：
 ### POST /api/messages/send
 
 发送短信。只负责**入库入队**，实际发送由后台串口 worker 串行执行（短信状态随后变为 `sent` / `failed`）。成功返回 `202`。
+
+> 超长内容自动拼接为**一条**长短信：纯 ASCII 分片用 GSM 7bit（153 字符/段），中文/非 ASCII 分片用 UCS2（67 字符/段），每段带 `05 00 03 <ref> <total> <seq>` 连接头，收方重组为一条；单段纯 ASCII 仍走 TEXT 模式（160 字符）。内容超过 255 段会被拒绝。
 
 请求：
 

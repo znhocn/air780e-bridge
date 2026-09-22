@@ -9,6 +9,7 @@ Design notes:
 
 import logging
 import re
+import secrets
 import threading
 import time
 
@@ -19,9 +20,198 @@ log = logging.getLogger("air780e.at")
 FINAL_RE = re.compile(r"^(OK|ERROR|\+CME ERROR:.*|\+CMS ERROR:.*)$")
 CLIP_RE = re.compile(r'^\+CLIP:\s*"([^"]*)"')
 
+# GSM 03.38 default alphabet (DCS=0); index = septet code.
+_GSM_BASIC = (
+    "@\xa3$\xa5\xe8\xe9\xf9\xec\xf2\xc7\n\xd8\xf8\r\xc5\xe5"
+    "\u0394_\u03a6\u0393\u039b\u03a9\u03a0\u03a8\u03a3\u0398\u039e\x1b\xc6\xe6\xe9\xc9 "
+    "!\"\xa4%&\'()*+,-./0123456789:;<=>?\xa1"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ\xc4\xd6\xd1\xdc\xa7\xbf"
+    "abcdefghijklmnopqrstuvwxyz\xe4\xf6\xf1\xfc\xe0"
+)
+_GSM_BASIC_INV = {c: i for i, c in enumerate(_GSM_BASIC)}
+_GSM_EXT = {
+    0x14: "^", 0x28: "{", 0x29: "}", 0x2F: "\\",
+    0x3C: "[", 0x3D: "~", 0x3E: "]", 0x40: "|", 0x65: "\u20ac",
+}
+_GSM_EXT_INV = {c: i for i, c in _GSM_EXT.items()}
+
+
+def gsm7_encodable(text: str) -> bool:
+    return all(ch in _GSM_BASIC_INV or ch in _GSM_EXT_INV for ch in text)
+
+
+def gsm7_septets(text: str) -> list:
+    """Map text to GSM-7bit septet values (0x1B escape sequences unfold to 2 septets)."""
+    out = []
+    for ch in text:
+        if ch in _GSM_BASIC_INV:
+            out.append(_GSM_BASIC_INV[ch])
+        else:
+            out.append(0x1B)
+            out.append(_GSM_EXT_INV[ch])
+    return out
+
+
+def gsm7_decode(septets) -> str:
+    out = []
+    i = 0
+    while i < len(septets):
+        s = septets[i]
+        if s == 0x1B:
+            if i + 1 < len(septets) and septets[i + 1] in _GSM_EXT:
+                out.append(_GSM_EXT[septets[i + 1]])
+            i += 2
+        else:
+            out.append(_GSM_BASIC[s] if s < len(_GSM_BASIC) else "?")
+            i += 1
+    return "".join(out)
+
+
+def pack_septets(septets) -> bytes:
+    """Pack GSM-7bit septet values into a byte stream (LSB-first, 3GPP style)."""
+    bits = 0
+    acc = 0
+    out = bytearray()
+    for s in septets:
+        acc |= s << bits
+        bits += 7
+        while bits >= 8:
+            out.append(acc & 0xFF)
+            acc >>= 8
+            bits -= 8
+    if bits:
+        out.append(acc & 0xFF)
+    return bytes(out)
+
+
+def unpack_septets(data: bytes, n: int) -> list:
+    out = []
+    bit = 0
+    for _ in range(n):
+        val = 0
+        shift = 0
+        need = 7
+        while need:
+            b = data[bit >> 3] if (bit >> 3) < len(data) else 0
+            off = bit & 7
+            take = min(need, 8 - off)
+            val |= ((b >> off) & ((1 << take) - 1)) << shift
+            shift += take
+            need -= take
+            bit += take
+        out.append(val)
+    return out
+
 
 def ucs2_hex(text: str) -> str:
     return text.encode("utf-16-be").hex().upper()
+
+
+def pdu_address(number: str) -> tuple[int, str]:
+    """Pack a phone number into a TP-DA (address length, type+digits bytes).
+
+    Semi-octet packing puts the first digit in the low nibble, matching the
+    GSM SMSC format this module uses (same convention as SMS-center numbers).
+    """
+    digits = "".join(c for c in number if c.isdigit())
+    packed = []
+    for i in range(0, len(digits), 2):
+        hi = digits[i + 1] if i + 1 < len(digits) else "F"
+        packed.append(f"{int(hi, 16):X}{int(digits[i], 16):X}")
+    toa = "91" if number.startswith("+") else "81"
+    return len(digits), toa + "".join(packed).upper()
+
+
+def ucs2_pdu(number: str, text: str, udh: bytes = None) -> str:
+    """Build an SMS-SUBMIT PDU (DCS=8 UCS2) as a hex string.
+
+    The leading '00' SCA field tells the module to use the SIM's message
+    center, mirroring Air780E's own text/PDU examples. Returns the full PDU
+    hex; the CMGS <length> parameter must exclude that 1-byte SCA octet.
+
+    When `udh` is given the TP-UDHI bit is set (fo=0x51); UDL counts the
+    header bytes + the UCS2 payload in octets.
+    """
+    body = text.encode("utf-16-be")
+    if udh:
+        body = udh + body
+    alen, addr = pdu_address(number)
+    fo = "51" if udh else "11"
+    return (
+        "00" +                       # SCA: use SMSC from the SIM
+        fo +                         # fo: SMS-SUBMIT, validity relative (+UDHI if concat)
+        "00" +                       # mr
+        f"{alen:02X}" + addr +       # destination address
+        "00" +                       # pid
+        "08" +                       # dcs: UCS2
+        "A7" +                       # vp: relative, 24h
+        f"{len(body):02X}" + body.hex().upper()
+    )
+
+
+def gsm7_pdu(number: str, text: str, udh: bytes = None) -> str:
+    """Build an SMS-SUBMIT PDU (DCS=0 GSM 7-bit) as a hex string.
+
+    UDL counts septets. A UDH is itself passed as 7-bit septet values; the
+    header bytes are prepended verbatim as the UDHL+UDH septets followed by
+    the packed text (matches how the module round-trips 7-bit PDUs).
+    """
+    septets = gsm7_septets(text)
+    if udh:
+        septets = list(udh) + septets
+    alen, addr = pdu_address(number)
+    fo = "51" if udh else "11"
+    return (
+        "00" +                       # SCA: use SMSC from the SIM
+        fo +                         # fo: SMS-SUBMIT, validity relative (+UDHI if concat)
+        "00" +                       # mr
+        f"{alen:02X}" + addr +       # destination address
+        "00" +                       # pid
+        "00" +                       # dcs: GSM 7-bit default alphabet
+        "A7" +                       # vp: relative, 24h
+        f"{len(septets):02X}" + pack_septets(septets).hex().upper()
+    )
+
+
+def concat_udh(ref: int, total: int, seq: int) -> bytes:
+    """Concatenated-SMS user data header (IEI 0x00, 8-bit ref). 6 bytes incl. UHL.
+
+    ref/total/seq are single octets (GSM 03.40), so a message can span at most
+    255 segments; longer payloads are rejected at send time.
+    """
+    return bytes([0x05, 0x00, 0x03, ref & 0xFF, total, seq])
+
+
+def split_ucs2(text: str, cap_units: int) -> list:
+    """Split text into UCS2-sized segments honoring UTF-16 code units (astral chars=2)."""
+    pieces, cur, units = [], [], 0
+    for ch in text:
+        u = 1 if ord(ch) < 0x10000 else 2
+        if units and units + u > cap_units:
+            pieces.append("".join(cur))
+            cur, units = [ch], u
+        else:
+            cur.append(ch)
+            units += u
+    if cur or not pieces:
+        pieces.append("".join(cur))
+    return pieces or [""]
+
+
+def split_gsm7(text: str, cap_septets: int) -> list:
+    """Split text into 7-bit segments by septet budget (escape chars take 2)."""
+    pieces, cur, used = [], [], 0
+    for ch in text:
+        s = 1 if ch in _GSM_BASIC_INV else 2
+        if used and used + s > cap_septets:
+            pieces.append("".join(cur))
+            cur, used = [ch], s
+        else:
+            cur.append(ch)
+            used += s
+    if cur or not pieces:
+        pieces.append("".join(cur))
+    return pieces or [""]
 
 
 def ucs2_decode(hexstr: str) -> str:
@@ -77,6 +267,7 @@ class ATDevice:
         self._lock = threading.Lock()
         self._current: CommandResult | None = None
         self._charset: str | None = None  # last applied CSCS, to avoid redundant switches
+        self._ref_counter = secrets.randbits(16)  # concat SMS reference source
         self._running = False
         self._thread: threading.Thread | None = None
         self.on_fatal = None  # callable(exc)
@@ -196,56 +387,99 @@ class ATDevice:
             return self._submit(cmd, timeout)
 
     def send_sms(self, number: str, content: str, wait: float = 70.0):
-        """Send an SMS; supports Chinese. Auto-selects GSM/UCS2 encoding per content.
+        """Send an SMS; supports Chinese and long (multi-segment) messages.
+
+        - Pure GSM-7bit ASCII of one segment: TEXT mode (160 chars, no PDU).
+        - One-segment non-ASCII: PDU mode DCS=8 (UCS2) - on Air780E the
+          TEXT-mode CMGS payload is taken verbatim (hex never decoded), so
+          Chinese must go through a self-built PDU.
+        - Multi-segment content is sent as ONE concatenated (UDHI) PDU stream:
+          ASCII uses DCS=0 GSM-7bit (153 chars/seg, UDH prefix), non-ASCII uses
+          DCS=8 UCS2 (67 chars/seg). The recipient reassembles a single long SMS.
 
         Returns (charset, results); results holds one CommandResult per segment.
         """
         number = number.strip()
         if not number:
             raise ValueError("Number is empty")
-        pure_ascii = all(ord(c) < 128 for c in number + content)
-        charset = "GSM" if pure_ascii else "UCS2"
-        dcs = 0 if pure_ascii else 8
-        seg_len = 160 if pure_ascii else 67
-        pieces = [content[i : i + seg_len] for i in range(0, len(content), seg_len)]
-        if not pieces:
-            pieces = [""]
+        use_gsm7 = gsm7_encodable(content) and all(ord(c) < 128 for c in content)
 
         with self._lock:
             if not self.connected:
                 raise CommandError("Device not connected")
-            if charset != self._charset:
-                res = self._submit(f'AT+CSCS="{charset}"', 5)
-                if not res.ok:
-                    raise CommandError(f"Failed to set charset: {res.error_text()}")
-                res = self._submit(f"AT+CSMP=17,167,0,{dcs}", 5)
-                if not res.ok:
-                    raise CommandError(f"Failed to set text-mode params: {res.error_text()}")
-                self._charset = charset
+            if use_gsm7 and len(split_gsm7(content, 160)) == 1:
+                return self._send_text_ascii(number, content, wait)
+            return self._send_pdu(number, content, "gsm7" if use_gsm7 else "ucs2", wait)
 
-            addr = number if pure_ascii else ucs2_hex(number)
+    def _next_ref(self, bits: int) -> int:
+        self._ref_counter = (self._ref_counter + 1) & ((1 << bits) - 1)
+        return self._ref_counter
+
+    def _send_pdu(self, number: str, content: str, mode: str, wait: float) -> tuple:
+        """Send messages in PDU mode; multi-segment content becomes one concatenated SMS."""
+        res = self._submit("AT+CMGF=0", 5)
+        if not res.ok:
+            raise CommandError(f"Failed to switch to PDU mode: {res.error_text()}")
+        try:
+            if mode == "gsm7":
+                pieces = split_gsm7(content, 153)
+            else:
+                pieces = split_ucs2(content, 67)
+            if len(pieces) > 255:
+                raise CommandError(
+                    f"Message too long for SMS: {len(pieces)} segments (max 255)"
+                )
+            ref = self._next_ref(8)
             results = []
+            for seq, body in enumerate(pieces, 1):
+                udh = concat_udh(ref, len(pieces), seq) if len(pieces) > 1 else None
+                pdu = gsm7_pdu(number, body, udh) if mode == "gsm7" else ucs2_pdu(number, body, udh)
+                length = (len(pdu) // 2) - 1  # CMGS length excludes the SCA octet
+                res = self._cmgs_exchange(f"AT+CMGS={length}", pdu.encode(), wait)
+                results.append(res)
+                if not res.ok:
+                    break
+            return ("GSM" if mode == "gsm7" else "UCS2"), results
+        finally:
+            self._current = None
             try:
-                for body in pieces:
-                    cur = CommandResult(wait)
-                    cmd = f'AT+CMGS="{addr}"'
-                    cur.echo = cmd
-                    self._current = cur
-                    self._write((cmd + "\r").encode())
-                    if not self._wait_prompt(cur, 25):
-                        if not cur.done.is_set():
-                            cur.timed_out = True
-                            self._write(b"\x1b")  # ESC to abort
-                        cur.done.set()
-                        results.append(cur)
-                        break
-                    payload = body if pure_ascii else ucs2_hex(body)
-                    self._write(payload.encode())
-                    self._write(b"\x1a")  # ctrl-Z to submit
-                    cur.wait()
-                    results.append(cur)
-                    if not cur.ok:
-                        break
-            finally:
-                self._current = None
-            return charset, results
+                res = self._submit("AT+CMGF=1", 5)  # restore TEXT mode for CMGL polling
+                if not res.ok:
+                    log.error("Failed to restore TEXT mode after PDU send: %s", res.error_text())
+            except Exception as exc:
+                log.error("Failed to restore TEXT mode after PDU send: %s", exc)
+
+    def _send_text_ascii(self, number: str, content: str, wait: float) -> tuple:
+        """Send an ASCII-only message in TEXT mode (GSM 7-bit, 160 chars/seg).
+
+        Single-segment path only: the module takes the payload verbatim, so
+        ASCII (whose byte values never collide with 0x1A) is safe as-is.
+        """
+        charset = "GSM"
+        if charset != self._charset:
+            res = self._submit('AT+CSCS="GSM"', 5)
+            if not res.ok:
+                raise CommandError(f"Failed to set charset: {res.error_text()}")
+            res = self._submit("AT+CSMP=17,167,0,0", 5)
+            if not res.ok:
+                raise CommandError(f"Failed to set text-mode params: {res.error_text()}")
+            self._charset = charset
+        res = self._cmgs_exchange(f'AT+CMGS="{number}"', content.encode(), wait)
+        return charset, [res]
+
+    def _cmgs_exchange(self, cmd: str, payload: bytes, wait: float) -> CommandResult:
+        """Issue AT+CMGS, wait for '>', submit payload + ctrl-Z, return result."""
+        cur = CommandResult(wait)
+        cur.echo = cmd
+        self._current = cur
+        self._write((cmd + "\r").encode())
+        if not self._wait_prompt(cur, 25):
+            if not cur.done.is_set():
+                cur.timed_out = True
+                self._write(b"\x1b")  # ESC to abort
+            cur.done.set()
+            return cur
+        self._write(payload)
+        self._write(b"\x1a")  # ctrl-Z to submit
+        cur.wait()
+        return cur

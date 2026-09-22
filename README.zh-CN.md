@@ -11,7 +11,7 @@
 ## 功能亮点
 
 - **收短信**：轮询 `AT+CMGL`（无参 = REC UNREAD）→ 去重 → 入库 SQLite（WAL）→ 按配置转发 → 逐条删除，模组/SIM 存储不保留短信
-- **发短信**：REST 先入库、后台串行发送，自动切换 GSM 7bit（160 字符/条）与 UCS2（67 字符/条，中文/长短信自动分段）
+- **发短信**：REST 先入库、后台串行发送，自动切换 GSM 7bit TEXT 模式（160 字符/条）与 PDU-UCS2（67 字符/条）发送中文；超长内容自动拼接为**一条**长短信（UDHI 分片），收方完整重组
 - **通知转发**：钉钉 / 企业微信（群机器人）/ 飞书 / Telegram / Email，底层统一走 **Apprise**；另有独立 **Webhook HTTP 直推** 与任意 **Apprise URL** 渠道
 - **定时任务**：按天间隔周期发送短信（`interval_days`），可手动立即触发
 - **联系人**：号码 ↔ 名称映射，会话页直接显示姓名
@@ -150,8 +150,8 @@ Webhook 推送 body：
 
 ## 技术说明
 
-- **收短信**：每 `POLL_INTERVAL` 轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持 `AT+CMGL=4`，会返回 `+CMS ERROR: 500`）→ 解析（处理引号内带逗号的时间戳、UCS2 引号包裹的正文行）→ 去重（10 分钟内同号同内容）→ 入库 `stored` → 按配置推送 → 逐条 `AT+CMGD` 删除 → 每轮后再 `AT+CMGD=1,2` 清已读/已发残留。短信与日志只存 SQLite，设备/SIM 存储不保留。
-- **发短信**：按内容是否含非 ASCII 自动选 `CSCS="GSM"`（160 字符/条）或 `CSCS="UCS2"`（67 字符/条，中文/长短信自动分段），`AT+CMGS` + ctrl-Z 提交；一条锁串行发送，避免与轮询撞车。
+- **收短信**：每 `POLL_INTERVAL` 轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持 `AT+CMGL=4`，会返回 `+CMS ERROR: 500`）→ 解析（处理引号内带逗号的时间戳、UCS2 引号包裹的正文行）→ **长短信拼接**（TEXT 模式会剥掉 UDH，每段都以干净可读文本返回且 SCTS 精确到秒相同；同一轮里同号码 + 相同 SCTS 的分段按序号拼成**一条** → 入库 → 推送一次 → 逐段删除）→ 去重（10 分钟内同号同内容）→ 入库 `stored` → 按配置推送 → 逐条 `AT+CMGD` 删除 → 每轮后再 `AT+CMGD=1,2` 清已读/已发残留。短信与日志只存 SQLite，设备/SIM 存储不保留。
+- **发短信**：单条纯 ASCII 走 **TEXT 模式**（`CSCS="GSM"` + `CSMP=17,167,0,0`，160 字符/条）；单条中文走 **PDU 模式**（DCS=8 UCS2，67 字符）。**多条的超长内容一律走 PDU 拼接**（`AT+CMGF=0`，每段一次 `AT+CMGS`，带 `05 00 03 <ref> <total> <seq>` 连接 UDH，发完恢复 `AT+CMGF=1`）：ASCII 用 DCS=0 GSM 7bit（153 字符/段），中文用 DCS=8 UCS2（67 字符/段），收方重组为**一条**长短信。**必须用 PDU 发中文**：Air780E 的 TEXT 模式 `AT+CMGS` 会把正文原样（不转码 hex）当载荷发出，中文会乱码；PDU 由我们自组（SCA=00 用 SIM 短信中心、地址 semi-octet、VP=A7=24h），保证线上编码正确，并已用 `AT+CMGW`/`AT+CMGR` 逐字节回读验证。一条锁串行发送，避免与轮询撞车。
 - **状态采集**：`AT+CSQ`（信号）、`AT+CREG?`（`0`/`1`/`5`）、`AT+COPS?`、`AT+CGMM/CGMR/CGSN`、`AT+CPIN?`、`AT+CCID`，每 `STATUS_INTERVAL` 一次。
 - **断线自愈**：读异常触发 `on_fatal`，worker 每 `CONNECT_RETRY_INTERVAL` 自动重连并重新握手（`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`）。
 - **来电通知**：`+CLIP` 事件（120 秒内同号去重）→ 推送“来电”通知，计入 `calls_total` 统计。
