@@ -134,21 +134,72 @@ def _decode_pdu_scts(raw: bytes) -> str:
            f"{digits(raw[3])}:{digits(raw[4])}:{digits(raw[5])}{'-' if neg else '+'}{tz}"
 
 
-def parse_sms_pdu(pdu_hex: str) -> dict:
-    """Parse one PDU-mode CMGL/CMGR readback (full PDU, SCA included).
+def _scts_plausible(raw: bytes) -> bool:
+    """Whether TP-SCTS bytes (~7 octets) look like real BCD time.
 
-    Handles SMS-DELIVER (network MT) and SMS-SUBMIT (CMGW self-tests) shapes.
-    Returns sender / scts / content, with ref/total/seq when a concatenation
-    UDH is present. Raises ValueError on malformed input.
+    Used to pick the correct SCA layout: Air780E sometimes reports the full
+    SCA (message-center address) in CMGL output and sometimes strips it, and a
+    mis-aligned parse yields both a garbage SCTS and a mis-shifted body.
+    """
+    if len(raw) < 7:
+        return False
+    for x in raw[:6]:
+        lo, hi = x & 0x0F, (x >> 4) & 0x0F
+        if lo > 9 or hi > 9:
+            return False
+    year, month, day = (raw[0] & 0x0F) * 10 + (raw[0] >> 4), \
+        (raw[1] & 0x0F) * 10 + (raw[1] >> 4), \
+        (raw[2] & 0x0F) * 10 + (raw[2] >> 4)
+    hour, minute, second = (raw[3] & 0x0F) * 10 + (raw[3] >> 4), \
+        (raw[4] & 0x0F) * 10 + (raw[4] >> 4), \
+        (raw[5] & 0x0F) * 10 + (raw[5] >> 4)
+    tz_lo, tz_hi = raw[6] & 0x0F, (raw[6] >> 4) & 0x07
+    return (1 <= month <= 12 and 1 <= day <= 31 and hour <= 23
+            and minute <= 59 and second <= 59 and tz_lo <= 9 and tz_hi <= 24)
+
+
+def parse_sms_pdu(pdu_hex: str) -> dict:
+    """Parse one PDU-mode CMGL/CMGR readback into sender / scts / content, plus
+    ref/total/seq when a concatenation UDH is present.
+
+    Air780E does NOT reliably strip the SCA from mobile-terminated PDUs: on
+    receipt one message keeps the full message-center address (``08 91 ...``)
+    while the next omits it. Both layouts are tried and the one whose TP-SCTS
+    decodes as plausible BCD time (or that yields non-empty text, as a tie
+    break) is kept. Raises ValueError on malformed input.
     """
     b = bytes.fromhex(pdu_hex.strip())
     if len(b) < 5:
         raise ValueError("PDU too short")
-    # Air780E strips the SCA octet from CMGL/CMGR output; tolerate an explicit
-    # SCA of length 0 when fed the full PDU (e.g. self-tests via CMGW).
-    i = 1 if b[0] == 0x00 else 0
-    if i >= len(b):
-        raise ValueError("PDU ends inside SCA")
+    offsets = []
+    if b[0] == 0x00:  # explicit SCA of length 0 (self-built PDUs, CMGW tests)
+        offsets.append(1)
+    if 0 < b[0] <= 0x19 and b[0] + 2 < len(b) and b[1] >= 0x80:
+        # b[0] is an SCA length and b[1] the SMSC type-of-address (>=0x80)
+        offsets.append(1 + b[0])
+    offsets.append(0)  # SCA fully stripped: b[0] is the TP first octet
+    best = None
+    best_key = None
+    errors = []
+    for off in offsets:
+        try:
+            r = _parse_sms_pdu_core(b[off:])
+        except ValueError as exc:
+            errors.append(exc)
+            continue
+        key = (_scts_plausible(r.pop("_scts_raw", b"")), bool(r["content"]))
+        if best_key is None or key > best_key:
+            best_key, best = key, r
+    if best is not None:
+        return best
+    raise ValueError(errors[-1] if errors else ValueError("PDU too short"))
+
+
+def _parse_sms_pdu_core(b: bytes) -> dict:
+    """Parse a PDU whose first byte is the TP first octet (SCA removed if any)."""
+    if len(b) < 5:
+        raise ValueError("PDU too short")
+    i = 0
     fo = b[i]
     i += 1
     tp = fo & 0x03
@@ -201,12 +252,32 @@ def parse_sms_pdu(pdu_hex: str) -> dict:
         content = bytes(body).decode("utf-16-be", errors="replace")
     elif alpha == 0x00:  # GSM-7bit: udl counts septets
         septets = unpack_septets(ud, udl)
-        if udhi:
-            if len(septets) >= 6:
-                out = _parse_pdu_udh(bytes(septets[:6]))
+        if udhi and len(ud) >= 1:
+            udh_octets = ud[0] + 1
+            if udh_octets <= len(ud):
+                # 3GPP TS 23.038: the UDH is octet-aligned -- parse it from the
+                # raw octets, then skip header + fill bits to the first text
+                # septet boundary (ceil(octets*8/7) septets). Reading the header
+                # from the septet stream shifts the body by one septet.
+                header_septets = (udh_octets * 8 + 6) // 7
+                out = _parse_pdu_udh(ud[:udh_octets])
+                if not out:
+                    # Some senders (older Air780E firmware, older builds of this
+                    # project) packed `05 00 03 ref tot seq` as a plain
+                    # continuous septet stream with no fill bits. Fall back to
+                    # that convention so their long SMS still decode correctly;
+                    # the packed text then starts at septet `udh_octets`.
+                    legacy = unpack_septets(ud[:udh_octets], udh_octets)
+                    out = _parse_pdu_udh(
+                        bytes(legacy[:6]) if len(legacy) >= 6 else b""
+                    )
+                    if out:
+                        header_septets = udh_octets
                 if out:
                     ref, total, seq = out
-            body = septets[6:]
+                body = septets[header_septets:]
+            else:
+                body = septets
         else:
             body = septets
         content = gsm7_decode(list(body))
@@ -221,6 +292,7 @@ def parse_sms_pdu(pdu_hex: str) -> dict:
         "total": total,
         "seq": seq,
         "udhi": udhi,
+        "_scts_raw": scts_raw,
     }
 
 
@@ -273,6 +345,7 @@ def group_pdu_parts(parts: list) -> tuple:
             "sender": p["sender"],
             "scts": p["scts"],
             "indices": [p.get("index", "")],
+            "pdus": [p.get("pdu", "")],
             "content": p["content"],
             "raw": "",
         })
@@ -299,6 +372,7 @@ def group_pdu_parts(parts: list) -> tuple:
             "sender": sender,
             "scts": ps[0]["scts"],
             "indices": idxs,
+            "pdus": [p.get("pdu", "") for p in ps],
             "content": "".join(p["content"] for p in ps),
             "raw": f"ref={_ref} total={total} seq={seq_list}",
         })
@@ -594,6 +668,7 @@ class SerialWorker(threading.Thread):
                         parsed = parse_sms_pdu(rec["pdu"])
                         parsed["sender"] = _norm_number(parsed["sender"])
                         parsed["index"] = rec["index"]
+                        parsed["pdu"] = rec["pdu"]
                         parts.append(parsed)
                     except Exception as exc:
                         log.warning("Skipping unparseable SMS PDU at index %s: %s",
@@ -689,6 +764,11 @@ class SerialWorker(threading.Thread):
         indices = assembled["indices"]
         meta = assembled["raw"]
         raw = " ".join(x for x in (f"idx={','.join(indices)}", meta, f"scts={scts}") if x).strip()
+        if not content:
+            # Empty body -- keep the raw PDU(s) in the record so the format the
+            # network actually delivered can be diagnosed offline.
+            raw += " pdu=" + " ".join(assembled.get("pdus") or [])
+            log.warning("Incoming SMS has EMPTY content (%s)", raw)
         if not self._already_stored(sender, content):
             mid = self.db.execute(
                 "INSERT INTO messages (direction, sender, receiver, content, status, raw) "

@@ -99,6 +99,48 @@ def pack_septets(septets) -> bytes:
     return bytes(out)
 
 
+def pack_septets_with_header(header: bytes, septets) -> bytes:
+    """Pack GSM-7bit `septets` after an octet-aligned UDH, padded to a septet boundary.
+
+    3GPP TS 23.038: with a UDH present in GSM 7-bit user data the header stays
+    octet-aligned at the start of the field, then fill bits are inserted so the
+    packed message begins at the next septet boundary (ceil(octets*8/7) septets
+    from bit 0). The caller must set UDL to header_septets + len(septets).
+    """
+    bits = 0
+    acc = 0
+    total = 0
+    out = bytearray()
+    for b in header:
+        acc |= b << bits
+        bits += 8
+        total += 8
+        while bits >= 8:
+            out.append(acc & 0xFF)
+            acc >>= 8
+            bits -= 8
+    # Fill bits so the packed text starts on the next septet boundary. `total`
+    # keeps the absolute bit position (`bits` is only the byte remainder).
+    pad = (-total) % 7
+    total += pad
+    bits += pad
+    while bits >= 8:
+        out.append(acc & 0xFF)
+        acc >>= 8
+        bits -= 8
+    for s in septets:
+        acc |= s << bits
+        bits += 7
+        total += 7
+        while bits >= 8:
+            out.append(acc & 0xFF)
+            acc >>= 8
+            bits -= 8
+    if bits:
+        out.append(acc & 0xFF)
+    return bytes(out)
+
+
 def unpack_septets(data: bytes, n: int) -> list:
     out = []
     bit = 0
@@ -167,15 +209,22 @@ def ucs2_pdu(number: str, text: str, udh: bytes = None) -> str:
 def gsm7_pdu(number: str, text: str, udh: bytes = None) -> str:
     """Build an SMS-SUBMIT PDU (DCS=0 GSM 7-bit) as a hex string.
 
-    UDL counts septets. A UDH is itself passed as 7-bit septet values; the
-    header bytes are prepended verbatim as the UDHL+UDH septets followed by
-    the packed text (matches how the module round-trips 7-bit PDUs).
+    UDL counts septets. With a UDH the header is octet-aligned (3GPP
+    TS 23.038): the UDHL+UDH bytes are placed verbatim, fill bits pad to the
+    next septet boundary, then the packed text follows. Any receiver reading
+    the header as raw octets (real phones, SMSCs, this project's parser) gets
+    the correct segment metadata and unshifted body.
     """
-    septets = gsm7_septets(text)
-    if udh:
-        septets = list(udh) + septets
+    text_septets = gsm7_septets(text)
     alen, addr = pdu_address(number)
     fo = "51" if udh else "11"
+    if udh:
+        header_septets = (len(udh) * 8 + 6) // 7
+        packed = pack_septets_with_header(udh, text_septets)
+        udl = header_septets + len(text_septets)
+    else:
+        packed = pack_septets(text_septets)
+        udl = len(text_septets)
     return (
         "00" +                       # SCA: use SMSC from the SIM
         fo +                         # fo: SMS-SUBMIT, validity relative (+UDHI if concat)
@@ -184,7 +233,7 @@ def gsm7_pdu(number: str, text: str, udh: bytes = None) -> str:
         "00" +                       # pid
         "00" +                       # dcs: GSM 7-bit default alphabet
         "A7" +                       # vp: relative, 24h
-        f"{len(septets):02X}" + pack_septets(septets).hex().upper()
+        f"{udl:02X}" + packed.hex().upper()
     )
 
 
