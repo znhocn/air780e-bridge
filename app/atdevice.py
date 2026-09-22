@@ -40,6 +40,21 @@ def gsm7_encodable(text: str) -> bool:
     return all(ch in _GSM_BASIC_INV or ch in _GSM_EXT_INV for ch in text)
 
 
+def ascii_text_eligible(content: str) -> bool:
+    """Whether content can safely go through TEXT-mode CMGS as raw bytes.
+
+    ASCII bytes are safe as payload (they never collide with the 0x1A
+    ctrl-Z terminator), except a literal ESC (0x1B): that byte is the
+    GSM7 extension-alphabet escape, so the receiver would mis-decode
+    everything after it. ESC content must go through the UCS2/PDU path.
+    """
+    return (
+        gsm7_encodable(content)
+        and all(ord(c) < 128 for c in content)
+        and "\x1b" not in content
+    )
+
+
 def gsm7_septets(text: str) -> list:
     """Map text to GSM-7bit septet values (0x1B escape sequences unfold to 2 septets)."""
     out = []
@@ -406,7 +421,7 @@ class ATDevice:
         number = re.sub(r"[^\d+*#]", "", number)
         if not number:
             raise ValueError("Number is empty")
-        use_gsm7 = gsm7_encodable(content) and all(ord(c) < 128 for c in content)
+        use_gsm7 = ascii_text_eligible(content)
 
         with self._lock:
             if not self.connected:
@@ -458,6 +473,8 @@ class ATDevice:
 
         Single-segment path only: the module takes the payload verbatim, so
         ASCII (whose byte values never collide with 0x1A) is safe as-is.
+        Callers must not route content containing 0x1B here (see
+        ascii_text_eligible).
         """
         charset = "GSM"
         if charset != self._charset:
