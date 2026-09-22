@@ -1,5 +1,6 @@
 """Background serial worker: connection management, SMS polling, outbound SMS queue, status collection."""
 
+import concurrent.futures
 import logging
 import queue
 import re
@@ -244,7 +245,9 @@ def group_pdu_parts(parts: list) -> list:
 
     Concatenation parts are grouped by (sender, ref, total) and sorted by the
     real TP-UDH sequence number, so out-of-order delivery reassembles exactly.
-    Non-concatenated records pass through unchanged.
+    Groups missing any segment are skipped (their SIM records stay unread and
+    get picked up on a later poll once the remaining segments arrive), so a
+    partial message is never stored. Non-concatenated records pass through.
     """
     singles = []
     buckets: dict[tuple, dict] = {}
@@ -268,17 +271,24 @@ def group_pdu_parts(parts: list) -> list:
             "raw": "",
         })
     for key in order:
+        sender, _ref, total = key
         parts_list = buckets[key]["parts"]
         ps = sorted(parts_list, key=lambda p: p["seq"])
+        if len(ps) != total or [p["seq"] for p in ps] != list(range(1, total + 1)):
+            log.info(
+                "Incomplete concatenated SMS from %s (ref=%s, %s/%s segments): "
+                "deferring until the remaining segments arrive",
+                sender, _ref, len(ps), total,
+            )
+            continue
         idxs = [p.get("index", "") for p in parts_list]
         seq_list = ",".join(str(p["seq"]) for p in ps)
-        sender, _ref, _total = key
         out.append({
             "sender": sender,
             "scts": ps[0]["scts"],
             "indices": idxs,
             "content": "".join(p["content"] for p in ps),
-            "raw": f"ref={_ref} total={len(ps)} seq={seq_list}",
+            "raw": f"ref={_ref} total={total} seq={seq_list}",
         })
     return out
 
@@ -298,6 +308,12 @@ class SerialWorker(threading.Thread):
         self._last_status_at = 0.0
         self._last_call = (None, 0.0)  # (number, monotonic ts) for +CLIP dedup
         self.on_send_result = None  # callable(message_id, ok) - outbound completion
+        # Notifications/on_message run on this single dedicated thread so slow
+        # network I/O can never stall the serial reader or the polling loop.
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="air780e-notify")
+        )
+        self._last_log_prune = 0.0
 
     # ---------- status ----------
 
@@ -313,6 +329,9 @@ class SerialWorker(threading.Thread):
         self._stop_event.set()
         if self.dev:
             self.dev.close()
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            self._executor = None
 
     # ---------- main loop ----------
 
@@ -386,7 +405,12 @@ class SerialWorker(threading.Thread):
         log.info("Serial disconnect event: %s", exc)
 
     def _on_incoming_call(self, number: str):
-        """Incoming call (+CLIP): de-duplicate and push a notification via the forwarder."""
+        """Incoming call (+CLIP): de-duplicate and push a notification via the forwarder.
+
+        Runs on the AT reader thread, so the notification itself is dispatched
+        asynchronously: network I/O must never block serial reads (a slow
+        webhook could otherwise stall an in-flight AT+CMGS prompt).
+        """
         num = _norm_number(number)
         now = time.monotonic()
         if not num:
@@ -409,15 +433,33 @@ class SerialWorker(threading.Thread):
                 "event": "call",
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
-            self.forwarder.forward(self.db, msg)
+            self._dispatch_notify(msg)
         except Exception:
             log.exception("Incoming-call notification failed")
+
+    def _dispatch_notify(self, message: dict):
+        """Queue a notify + on_message job on the dedicated notification thread."""
+        try:
+            if self._executor:
+                self._executor.submit(self._run_notify_job, message)
+        except Exception:
+            log.exception("Failed to queue notification job")
+
+    def _run_notify_job(self, message: dict):
+        try:
+            if self.forwarder:
+                self.forwarder.forward(self.db, message)
+            if self.on_message:
+                self.on_message(message)
+        except Exception:
+            log.exception("Notification job failed (msg #%s)", message.get("id"))
 
     # ---------- polling ----------
 
     def _poll_forever(self):
         while not self._stop_event.is_set() and self.dev and self.dev.connected:
             try:
+                self._prune_forward_logs_if_due()
                 if time.monotonic() - self._last_status_at >= settings.status_interval:
                     self._refresh_status()
                 self._poll_incoming()
@@ -425,6 +467,18 @@ class SerialWorker(threading.Thread):
             except Exception:
                 log.exception("Polling exception")
             self._stop_event.wait(settings.poll_interval)
+
+    def _prune_forward_logs_if_due(self):
+        """Keep dead forward_logs from growing forever (retention: 180 days, best effort)."""
+        if time.monotonic() - self._last_log_prune < 8 * 3600:
+            return
+        self._last_log_prune = time.monotonic()
+        try:
+            self.db.execute(
+                "DELETE FROM forward_logs WHERE created_at < datetime('now','localtime','-180 days')"
+            )
+        except Exception:
+            log.exception("forward_logs prune failed")
 
     def _refresh_status(self, force: bool = False):
         if not force and time.monotonic() - self._last_status_at < settings.status_interval:
@@ -506,11 +560,13 @@ class SerialWorker(threading.Thread):
         # PDU-mode read so each segment keeps its real concatenation UDH and we
         # can reassemble long SMS in exact network order; TEXT mode afterwards.
         pdu_ok = False
+        res = None
         try:
             res = self.dev.command("AT+CMGF=0", 5)
-            pdu_ok = True
-            res = self.dev.command("AT+CMGL", 8)
             pdu_ok = res.ok
+            if pdu_ok:
+                res = self.dev.command("AT+CMGL", 15)
+                pdu_ok = res.ok
         except Exception:
             log.exception("PDU-mode receive poll failed")
             pdu_ok = False
@@ -520,6 +576,7 @@ class SerialWorker(threading.Thread):
                 for rec in parse_cmgl_pdu(res.lines):
                     try:
                         parsed = parse_sms_pdu(rec["pdu"])
+                        parsed["sender"] = _norm_number(parsed["sender"])
                         parsed["index"] = rec["index"]
                         parts.append(parsed)
                     except Exception as exc:
@@ -527,12 +584,27 @@ class SerialWorker(threading.Thread):
                                     rec["index"], exc)
                 for assembled in group_pdu_parts(parts):
                     self._store_incoming(assembled)
+                self._purge_safe()
         finally:
             try:
                 self.dev.command("AT+CMGF=1", 5)
             except Exception:
                 log.exception("Failed to restore TEXT mode after receive poll")
-        self._purge_device_messages()
+
+    def _purge_safe(self):
+        """Clean read/sent leftovers without ever risking a new message.
+
+        AT+CMGD=<idx>,2 only removes READ and SENT entries, but to be safe
+        against a message that arrives after the main CMGL pass we first
+        re-list: if any unread SMS arrived meanwhile, defer the purge to the
+        next poll (that SMS will be picked up and processed then).
+        """
+        try:
+            recheck = self.dev.command("AT+CMGL", 15)
+            if not parse_cmgl_pdu(recheck.lines):
+                self.dev.command("AT+CMGD=1,2", 3)
+        except Exception:
+            log.exception("SMS residue purge failed")
 
     def _store_incoming(self, assembled: dict):
         """Store (and notify) one assembled incoming message, then drop its SIM records."""
@@ -551,22 +623,10 @@ class SerialWorker(threading.Thread):
             msg_row = self.db.row("SELECT * FROM messages WHERE id=?", (mid,))
             log.info("Received SMS #%s from %s: %s%s", mid, sender, content[:40],
                      f" ({len(indices)} parts)" if len(indices) > 1 else "")
-            if self.forwarder:
-                self.forwarder.forward(self.db, msg_row)
-            if self.on_message:
-                try:
-                    self.on_message(msg_row)
-                except Exception:
-                    log.exception("on_message callback failed")
+            if self.forwarder or self.on_message:
+                self._dispatch_notify(msg_row)
         for index in indices:
             self._delete_msg(index)
-
-    def _purge_device_messages(self):
-        """SMS are inserted and deleted one by one; here we purge leftover read+sent entries so SIM storage does not fill up."""
-        try:
-            self.dev.command("AT+CMGD=1,2", 3)
-        except Exception:
-            pass
 
     def _already_stored(self, sender: str, content: str) -> bool:
         row = self.db.row(
@@ -587,11 +647,15 @@ class SerialWorker(threading.Thread):
     def send(self, message_id: int, number: str, content: str):
         self._send_queue.put((message_id, number, content))
 
-    def _process_send_queue(self):
-        while self.dev and self.dev.connected:
+    def _process_send_queue(self, max_per_cycle: int = 3):
+        """Send queued messages, but only up to `max_per_cycle` per poll cycle so
+        incoming-SMS polling keeps interleaving even during large send bursts."""
+        for _ in range(max_per_cycle):
             try:
                 mid, number, content = self._send_queue.get_nowait()
             except queue.Empty:
+                return
+            if not (self.dev and self.dev.connected):
                 return
             self.db.execute(
                 "UPDATE messages SET status='sending' WHERE id=?", (mid,)

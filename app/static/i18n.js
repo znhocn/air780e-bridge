@@ -683,7 +683,7 @@
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     document.querySelectorAll("[data-i18n-title]").forEach((el) => {
       const v = dict()[el.getAttribute("data-i18n-title")];
-      if (v != null) document.title = v;
+      if (v != null) el.title = v;
     });
     document.querySelectorAll("[data-i18n]").forEach((el) => {
       const v = dict()[el.getAttribute("data-i18n")];
@@ -716,7 +716,8 @@
       const d = dict();
       let s = key in d ? d[key] : key;
       for (let i = 0; i < arguments.length - 1; i++) {
-        s = s.replace(new RegExp("\\{" + i + "\\}", "g"), arguments[i + 1]);
+        const v = arguments[i + 1];
+        s = s.replace(new RegExp("\\{" + i + "\\}", "g"), () => String(v));
       }
       return s;
     },

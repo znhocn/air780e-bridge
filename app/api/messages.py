@@ -106,8 +106,8 @@ def list_conversations(
     db = request.app.state.db
     where, params = ["1=1"], []
     if q:
-        where.append("content LIKE ?")
-        params.append(f"%{q}%")
+        where.append("content LIKE ? ESCAPE '\\'")
+        params.append(f"%{_like(q)}%")
     cond = " AND ".join(where)
     rows = db.rows(
         f"SELECT id,direction,sender,receiver,content,status,created_at "

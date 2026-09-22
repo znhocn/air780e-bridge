@@ -121,7 +121,11 @@ class Database:
 
     @contextmanager
     def cursor(self, *, write: bool = False):
-        """Serializes write ops; reads are concurrency-safe under WAL."""
+        """Serializes write ops; reads are concurrency-safe under WAL.
+
+        On error the write transaction is rolled back so a later statement
+        never effectively carries over the failed statement's changes.
+        """
         if write:
             self._write_lock.acquire()
         try:
@@ -129,6 +133,13 @@ class Database:
             yield cur
             if write:
                 self._conn().commit()
+        except BaseException:
+            if write:
+                try:
+                    self._conn().rollback()
+                except Exception:
+                    pass
+            raise
         finally:
             if write:
                 self._write_lock.release()

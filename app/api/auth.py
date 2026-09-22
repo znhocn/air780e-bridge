@@ -1,11 +1,49 @@
 """Login / first-deployment admin creation / change password"""
 
+import threading
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import schema
 from ..auth import create_token, hash_password, require_admin_user, verify_password
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Simple in-memory login brute-force guard: lock a username out briefly after
+# several failed attempts within a window (PBKDF2 is the first line of defense).
+_LOGIN_MAX_FAILS = 5
+_LOGIN_WINDOW = 600.0  # seconds; count resets after this
+_LOGIN_BLOCK = 120.0  # seconds of lockout once the cap is hit
+_LOGIN_ATTEMPTS: dict[str, list] = {}  # username -> [fail_count, last_fail_ts]
+_login_lock = threading.Lock()
+
+
+def _login_blocked(username: str) -> bool:
+    with _login_lock:
+        rec = _LOGIN_ATTEMPTS.get(username)
+        if not rec:
+            return False
+        fails, last = rec
+        if time.time() - last > _LOGIN_WINDOW:
+            _LOGIN_ATTEMPTS.pop(username, None)
+            return False
+        return fails >= _LOGIN_MAX_FAILS
+
+
+def _login_failed(username: str):
+    now = time.time()
+    with _login_lock:
+        fails, last = _LOGIN_ATTEMPTS.get(username, (0, now))
+        if fails == 0 or now - last > _LOGIN_WINDOW:
+            last = now
+            fails = 0
+        _LOGIN_ATTEMPTS[username] = [fails + 1, last]
+
+
+def _login_succeeded(username: str):
+    with _login_lock:
+        _LOGIN_ATTEMPTS.pop(username, None)
 
 
 def _admin_count(db) -> int:
@@ -40,11 +78,15 @@ def setup(body: schema.SetupRequest, request: Request):
 def login(body: schema.LoginRequest, request: Request):
     db = request.app.state.db
     username = body.username.strip()
+    if _login_blocked(username):
+        raise HTTPException(429, "Too many failed login attempts, try again later")
     row = db.row(
         "SELECT username, password_hash, salt FROM admins WHERE username=?", (username,)
     )
     if not row or not verify_password(body.password, row["salt"], row["password_hash"]):
+        _login_failed(username)
         raise HTTPException(401, "Invalid username or password")
+    _login_succeeded(username)
     return {"token": create_token(row["username"])}
 
 

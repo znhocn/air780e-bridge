@@ -64,7 +64,7 @@ data/            SQLite 数据库（gitignored）
 
 ## REST API 概览
 
-鉴权头 `Authorization: Bearer <token>`，接受管理端 JWT 或启用状态的 API Key（`/api/auth/*` 的 setup/login/setup-required 及 `/api/health`、`/api/version` 公开；`/api/auth/change-password` 仅 JWT）。完整字段与示例见 `docs/API.md`。
+鉴权头 `Authorization: Bearer <token>`，接受管理端 JWT 或启用状态的 API Key（`/api/auth/*` 的 setup/login/setup-required 及 `/api/health`、`/api/version` 公开；`/api/auth/change-password` 仅 JWT；`/api/notify-configs` 的列表/增删改/测试涉及明文渠道密钥，仅管理端 JWT）。完整字段与示例见 `docs/API.md`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -84,10 +84,10 @@ data/            SQLite 数据库（gitignored）
 | GET / POST | `/api/keys` | 密钥列表 / 创建（明文仅返回一次） |
 | DELETE | `/api/keys/{id}` | 永久删除 |
 | POST | `/api/keys/{id}/revoke` \| `/enable` | 停用 / 恢复 |
-| GET | `/api/notify-configs/types` | 各渠道字段定义 |
-| GET / POST | `/api/notify-configs` | 配置列表 / 新增 |
-| PUT / DELETE | `/api/notify-configs/{id}` | 修改 / 删除 |
-| POST | `/api/notify-configs/{id}/test` | 推送测试通知并记日志 |
+| GET | `/api/notify-configs/types` | 各渠道字段定义（元数据，API Key 可访问） |
+| GET / POST | `/api/notify-configs` | 配置列表 / 新增（仅管理端 JWT） |
+| PUT / DELETE | `/api/notify-configs/{id}` | 修改 / 删除（仅管理端 JWT） |
+| POST | `/api/notify-configs/{id}/test` | 推送测试通知并记日志（仅管理端 JWT） |
 | GET | `/api/forward-logs` | 转发/通知日志 |
 | GET / POST | `/api/tasks` | 定时任务列表 / 创建 |
 | PUT / DELETE | `/api/tasks/{id}` | 修改 / 删除 |
@@ -122,8 +122,9 @@ Webhook 推送 body：
 
 ## 短信收发技术要点
 
-- **收**：每 `POLL_INTERVAL` 切到 **PDU 模式**轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持数字枚举如 `AT+CMGL=4` 会返回 `+CMS ERROR: 500`，`AT+CMGL=0` 也不可靠，一律用无参）→ 每条记录是完整 PDU（模组会去掉 SCA 首字节）→ 解析 SMS-DELIVER/SUBMIT（semi-octet 地址、SCTS、DCS、UCS2/GSM7 内容）→ **长短信拼接**：多段短信每段的连接头 `05 00 03 <ref> <total> <seq>` 都会保留在 PDU 里，按**真实段序号 seq** 排序重组为**一条**消息（网络乱序投递也能拼对──这是 TEXT 模式下按 SIM 索引拼接会乱序的原因）→ `(sender, ref, total)` 分组 → 去重（10 分钟内同号码同内容）→ 入库 `stored` → 推送一次 → 逐段 `AT+CMGD` 删除 → 恢复 `AT+CMGF=1` → 每轮后再 `AT+CMGD=1,2` 清残留。设备/SIM 存储不保留短信。
-- **发**：REST 先入库 `queued` → worker 串行发送（一条锁，避免与轮询撞车）→ `sending` → `sent`/`failed`。按内容是否含非 ASCII 自动选发送方式：纯 ASCII 单条走 **TEXT 模式**（`AT+CSCS="GSM"` + `AT+CSMP=17,167,0,0`，160 字符/条，`AT+CMGS="<号码>"` + ctrl-Z 提交）；**长短信（多条）一律走 PDU 拼接**（`AT+CMGF=0` + `AT+CMGS=<PDU长度>` + PDU hex + ctrl-Z，发完恢复 `AT+CMGF=1`）：ASCII 用 DCS=0 GSM 7bit（153 字符/段），中文/非 ASCII 用 DCS=8 UCS2（67 字符/段），每段带连接 UDH（`05 00 03 <ref> <total> <seq>`），收方重组为**一条**长短信。**必须用 PDU 发中文**：Air780E 的 TEXT 模式 `AT+CMGS` 会把正文原样（不转码 hex）当载荷发出，中文会乱码；PDU 的 GSM 7bit（GSM 03.38 表 + 0x1B 扩展）与 UCS2 均由我们自组（SCA=00 用 SIM 短信中心、地址 semi-octet、DCS、VP=A7=24h），并用 `AT+CMGW`/`AT+CMGR` 实测逐字节回读验证。内容超 255 段（GSM7 约 39k 字符 / UCS2 约 17k 字符）会被拒绝。
+- **收**：每 `POLL_INTERVAL` 切到 **PDU 模式**轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持数字枚举如 `AT+CMGL=4` 会返回 `+CMS ERROR: 500`，`AT+CMGL=0` 也不可靠，一律用无参）→ 每条记录是完整 PDU（模组会去掉 SCA 首字节）→ 解析 SMS-DELIVER/SUBMIT（semi-octet 地址、SCTS、DCS、UCS2/GSM7 内容）→ **长短信拼接**：多段短信每段的连接头 `05 00 03 <ref> <total> <seq>` 都会保留在 PDU 里，按**真实段序号 seq** 排序重组为**一条**消息（网络乱序投递也能拼对──这是 TEXT 模式下按 SIM 索引拼接会乱序的原因）→ `(sender, ref, total)` 分组 → 去重（10 分钟内同号码同内容）→ 入库 `stored` → 推送一次 → 逐段 `AT+CMGD` 删除 → 恢复 `AT+CMGF=1`。**拼接组未收齐（缺失某段）时不入库**，段留在 SIM 等下一轮补齐后再拼，避免存半条；发件号统一转成纯数字。**清残留有保护**：恢复 TEXT 前先重发一次 `AT+CMGL`，若期间有新短信到达则不执行 `AT+CMGD=1,2`（防止清掉刚到的新短信），留到下一轮处理。设备/SIM 存储不保留短信。
+- **通知异步**：短信/来电的推送与 `on_message` 回调在独立通知线程（`SerialWorker._executor`）执行，绝不阻塞串口读线程或轮询线程（慢 webhook 也不会拖垮收/发）。`forward_logs` 每 8 小时自动清理 180 天前的记录。
+- **发**：REST 先入库 `queued` → worker 串行发送（一条锁，避免与轮询撞车；发送队列每轮至多处理 3 条，与收短信轮询交错，大批量时不饿死接收）→ `sending` → `sent`/`failed`。号码在发送前统一清洗为 `0-9+*#`（防 AT 注入）。按内容是否含非 ASCII 自动选发送方式：纯 ASCII 单条走 **TEXT 模式**（`AT+CSCS="GSM"` + `AT+CSMP=17,167,0,0`，160 字符/条，`AT+CMGS="<号码>"` + ctrl-Z 提交）；**长短信（多条）一律走 PDU 拼接**（`AT+CMGF=0` + `AT+CMGS=<PDU长度>` + PDU hex + ctrl-Z，发完恢复 `AT+CMGF=1`）：ASCII 用 DCS=0 GSM 7bit（153 字符/段），中文/非 ASCII 用 DCS=8 UCS2（67 字符/段），每段带连接 UDH（`05 00 03 <ref> <total> <seq>`），收方重组为**一条**长短信。**必须用 PDU 发中文**：Air780E 的 TEXT 模式 `AT+CMGS` 会把正文原样（不转码 hex）当载荷发出，中文会乱码；PDU 的 GSM 7bit（GSM 03.38 表 + 0x1B 扩展）与 UCS2 均由我们自组（SCA=00 用 SIM 短信中心、地址 semi-octet、DCS、VP=A7=24h），并用 `AT+CMGW`/`AT+CMGR` 实测逐字节回读验证。内容超 255 段（GSM7 约 39k 字符 / UCS2 约 17k 字符）会被拒绝。
 - **状态**：`AT+CSQ`（信号）、`AT+CREG?`（注册，`0` 未注册 / `1` 已注册 / `5` 漫游）、`AT+COPS?`、`AT+CGMM/CGMR/CGSN`、`AT+CPIN?`、`AT+CCID`；每 `STATUS_INTERVAL` 采集一次。
 - **断线**：读异常触发 `on_fatal`，worker 每隔 `CONNECT_RETRY_INTERVAL` 自动重连并重新握手（`AT` / `ATE0` / `AT+CMGF=1` / `AT+CSCS="UCS2"` / `AT+CNMI=2,1,0,0,0` / `AT+CLIP=1`）。
 - **来电**：`+CLIP` 事件（120 秒内同号去重）→ 按 `channel='call'` 相关日志计数，推送“来电”通知。

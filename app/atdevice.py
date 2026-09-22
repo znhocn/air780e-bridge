@@ -400,6 +400,10 @@ class ATDevice:
         Returns (charset, results); results holds one CommandResult per segment.
         """
         number = number.strip()
+        # Only GSM dial characters are allowed; anything else (e.g. quotes,
+        # CR/LF) is stripped so a peer-supplied number can never inject extra
+        # AT commands into the TEXT-mode AT+CMGS line.
+        number = re.sub(r"[^\d+*#]", "", number)
         if not number:
             raise ValueError("Number is empty")
         use_gsm7 = gsm7_encodable(content) and all(ord(c) < 128 for c in content)
@@ -473,13 +477,16 @@ class ATDevice:
         cur.echo = cmd
         self._current = cur
         self._write((cmd + "\r").encode())
-        if not self._wait_prompt(cur, 25):
-            if not cur.done.is_set():
-                cur.timed_out = True
-                self._write(b"\x1b")  # ESC to abort
-            cur.done.set()
+        try:
+            if not self._wait_prompt(cur, 25):
+                if not cur.done.is_set():
+                    cur.timed_out = True
+                    self._write(b"\x1b")  # ESC to abort
+                cur.done.set()
+                return cur
+            self._write(payload)
+            self._write(b"\x1a")  # ctrl-Z to submit
+            cur.wait()
             return cur
-        self._write(payload)
-        self._write(b"\x1a")  # ctrl-Z to submit
-        cur.wait()
-        return cur
+        finally:
+            self._current = None

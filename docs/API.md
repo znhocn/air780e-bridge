@@ -22,7 +22,8 @@
 
 - **公开**（无需鉴权）：`/api/health`、`/api/version`、`/api/auth/setup-required`、`/api/auth/setup`、`/api/auth/login`
 - **JWT 专属**：`/api/auth/change-password`（需管理端 JWT）
-- **其余**：JWT 或 API Key 都可以（`/api/messages/*`、`/api/device/*`、`/api/keys/*`、`/api/notify-configs*`、`/api/forward-logs`、`/api/tasks/*`、`/api/contacts/*`）
+- **JWT 专属（涉及明文渠道密钥）**：`/api/notify-configs` 的列表/增删改/测试（需管理端 JWT，API Key 不可访问）
+- **其余**：JWT 或 API Key 都可以（`/api/messages/*`、`/api/device/*`、`/api/keys/*`、`/api/notify-configs/types`、`/api/forward-logs`、`/api/tasks/*`、`/api/contacts/*`）
 
 鉴权失败统一返回：
 
@@ -72,11 +73,11 @@ curl -s -X POST http://localhost:8000/api/keys \
 | POST | `/api/keys/{id}/revoke` | 吊销密钥（停用） | Bearer |
 | POST | `/api/keys/{id}/enable` | 恢复密钥 | Bearer |
 | GET | `/api/notify-configs/types` | 各通知渠道配置字段定义 | Bearer |
-| GET | `/api/notify-configs` | 通知配置列表（含脱敏目标） | Bearer |
-| POST | `/api/notify-configs` | 新增通知配置 | Bearer |
-| PUT | `/api/notify-configs/{id}` | 修改通知配置 | Bearer |
-| DELETE | `/api/notify-configs/{id}` | 删除通知配置 | Bearer |
-| POST | `/api/notify-configs/{id}/test` | 推送一条测试通知并记录日志 | Bearer |
+| GET | `/api/notify-configs` | 通知配置列表（含脱敏目标；`params` 含明文密钥） | JWT |
+| POST | `/api/notify-configs` | 新增通知配置 | JWT |
+| PUT | `/api/notify-configs/{id}` | 修改通知配置 | JWT |
+| DELETE | `/api/notify-configs/{id}` | 删除通知配置 | JWT |
+| POST | `/api/notify-configs/{id}/test` | 推送一条测试通知并记录日志 | JWT |
 | GET | `/api/forward-logs` | 转发/通知日志 | Bearer |
 | GET | `/api/tasks` | 定时任务列表 | Bearer |
 | POST | `/api/tasks` | 创建定时任务 | Bearer |
@@ -161,7 +162,7 @@ curl -s -X POST http://localhost:8000/api/keys \
 { "token": "<jwt>" }
 ```
 
-错误：`401` 用户名或密码错误。
+错误：`401` 用户名或密码错误；`429` 同一用户名在 10 分钟内连续失败 5 次后被临时锁定 2 分钟（简单的暴力破解防护）。
 
 ### POST /api/auth/change-password
 

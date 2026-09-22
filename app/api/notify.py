@@ -5,7 +5,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import schema
-from ..auth import authenticate, format_ts
+from ..auth import authenticate, format_ts, require_admin_user
 from ..forwarder import CHANNEL_FIELDS, CHANNEL_LABELS, build_apprise_url, target_display
 
 router = APIRouter(prefix="/api", tags=["notify"])
@@ -54,13 +54,15 @@ def notify_types():
     }
 
 
-@router.get("/notify-configs", dependencies=[Depends(authenticate)])
+@router.get("/notify-configs", dependencies=[Depends(require_admin_user)])
 def list_configs(request: Request):
+    """Admin-only read: the returned `params` contain plaintext channel secrets
+    (bot tokens / SMTP passwords), so API-key holders must not see them."""
     db = request.app.state.db
     return [_row_out(r) for r in db.rows("SELECT * FROM notify_configs ORDER BY id")]
 
 
-@router.post("/notify-configs", dependencies=[Depends(authenticate)], status_code=201)
+@router.post("/notify-configs", dependencies=[Depends(require_admin_user)], status_code=201)
 def create_config(body: schema.NotifyIn, request: Request):
     body.type = body.type.lower()
     _validate(body.type, body.params)
@@ -80,7 +82,7 @@ def create_config(body: schema.NotifyIn, request: Request):
     return _row_out(db.row("SELECT * FROM notify_configs WHERE id=?", (mid,)))
 
 
-@router.put("/notify-configs/{cfg_id}", dependencies=[Depends(authenticate)])
+@router.put("/notify-configs/{cfg_id}", dependencies=[Depends(require_admin_user)])
 def update_config(cfg_id: int, body: schema.NotifyIn, request: Request):
     body.type = body.type.lower()
     _validate(body.type, body.params)
@@ -102,7 +104,7 @@ def update_config(cfg_id: int, body: schema.NotifyIn, request: Request):
     return _row_out(db.row("SELECT * FROM notify_configs WHERE id=?", (cfg_id,)))
 
 
-@router.delete("/notify-configs/{cfg_id}", dependencies=[Depends(authenticate)])
+@router.delete("/notify-configs/{cfg_id}", dependencies=[Depends(require_admin_user)])
 def delete_config(cfg_id: int, request: Request):
     db = request.app.state.db
     if not db.row("SELECT id FROM notify_configs WHERE id=?", (cfg_id,)):
@@ -111,7 +113,7 @@ def delete_config(cfg_id: int, request: Request):
     return {"ok": True}
 
 
-@router.post("/notify-configs/{cfg_id}/test", dependencies=[Depends(authenticate)])
+@router.post("/notify-configs/{cfg_id}/test", dependencies=[Depends(require_admin_user)])
 def test_config(cfg_id: int, request: Request):
     db = request.app.state.db
     cfg = db.row("SELECT * FROM notify_configs WHERE id=?", (cfg_id,))
