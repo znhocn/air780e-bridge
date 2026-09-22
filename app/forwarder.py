@@ -259,11 +259,11 @@ class Forwarder:
                 return ok, r.status_code, ("" if ok else r.text[:300])
             except Exception as exc:
                 return False, None, str(exc)
-        url = build_apprise_url(t, params)
-        a = self._apprise(url)
         try:
-            ok = a.notify(title=TITLE, body=self._body(cfg))
-            return bool(ok), None, ("" if ok else "Apprise send failed")
+            url = build_apprise_url(t, params)
+            a = self._apprise(url)
+            ok = bool(a.notify(title=TITLE, body=self._body(cfg)))
+            return ok, None, ("" if ok else "Apprise send failed")
         except Exception as exc:
             return False, None, str(exc)
 

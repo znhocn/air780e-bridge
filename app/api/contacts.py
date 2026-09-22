@@ -5,9 +5,9 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import schema
-from ..auth import authenticate
+from ..auth import require_admin_user
 
-router = APIRouter(prefix="/api/contacts", tags=["contacts"], dependencies=[Depends(authenticate)])
+router = APIRouter(prefix="/api/contacts", tags=["contacts"], dependencies=[Depends(require_admin_user)])
 
 
 def _row_out(r: dict) -> dict:

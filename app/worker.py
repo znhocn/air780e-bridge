@@ -13,6 +13,7 @@ from .config import settings
 log = logging.getLogger("air780e.worker")
 
 CALL_DEDUP_SECONDS = 120  # ignore repeated +CLIP reports for the same caller
+INCOMPLETE_GROUP_TTL = 24 * 3600  # drop a partial long-SMS group after 24h unchanged
 
 
 def _norm_number(n: str) -> str:
@@ -240,7 +241,7 @@ def parse_cmgl_pdu(lines: list) -> list:
     return [r for r in records if r["pdu"]]
 
 
-def group_pdu_parts(parts: list) -> list:
+def group_pdu_parts(parts: list) -> tuple:
     """Assemble PDU-mode records into messages using the exact segment order.
 
     Concatenation parts are grouped by (sender, ref, total) and sorted by the
@@ -248,6 +249,10 @@ def group_pdu_parts(parts: list) -> list:
     Groups missing any segment are skipped (their SIM records stay unread and
     get picked up on a later poll once the remaining segments arrive), so a
     partial message is never stored. Non-concatenated records pass through.
+
+    Returns ``(messages, incomplete)`` where ``incomplete`` lists the skipped
+    groups as ``{sender, ref, total, indices}`` (indices in arrival order) so
+    the caller can track stale partial deliveries.
     """
     singles = []
     buckets: dict[tuple, dict] = {}
@@ -262,6 +267,7 @@ def group_pdu_parts(parts: list) -> list:
             order.append(key)
         buckets[key]["parts"].append(p)
     out = []
+    incomplete = []
     for p in singles:
         out.append({
             "sender": p["sender"],
@@ -280,6 +286,12 @@ def group_pdu_parts(parts: list) -> list:
                 "deferring until the remaining segments arrive",
                 sender, _ref, len(ps), total,
             )
+            incomplete.append({
+                "sender": sender,
+                "ref": _ref,
+                "total": total,
+                "indices": [p.get("index", "") for p in parts_list],
+            })
             continue
         idxs = [p.get("index", "") for p in parts_list]
         seq_list = ",".join(str(p["seq"]) for p in ps)
@@ -290,7 +302,7 @@ def group_pdu_parts(parts: list) -> list:
             "content": "".join(p["content"] for p in ps),
             "raw": f"ref={_ref} total={total} seq={seq_list}",
         })
-    return out
+    return out, incomplete
 
 
 class SerialWorker(threading.Thread):
@@ -314,6 +326,9 @@ class SerialWorker(threading.Thread):
             concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="air780e-notify")
         )
         self._last_log_prune = 0.0
+        # (sender, ref, total) -> {"since": monotonic} for partial long-SMS groups
+        # that are still waiting for their remaining segments.
+        self._incomplete: dict = {}
 
     # ---------- status ----------
 
@@ -360,6 +375,7 @@ class SerialWorker(threading.Thread):
             self._stop_event.wait(settings.retry_interval)
 
     def connect_and_init(self):
+        self._incomplete = {}  # SIM state may have changed across a reconnect
         port = self._pick_port()
         if not port:
             raise CommandError(f"No usable serial port found (probed {settings.device_probe_ports})")
@@ -582,27 +598,86 @@ class SerialWorker(threading.Thread):
                     except Exception as exc:
                         log.warning("Skipping unparseable SMS PDU at index %s: %s",
                                     rec["index"], exc)
-                for assembled in group_pdu_parts(parts):
+                assembled_list, incomplete = group_pdu_parts(parts)
+                for assembled in assembled_list:
                     self._store_incoming(assembled)
-                self._purge_safe()
+                stale = self._track_incomplete(incomplete)
+                self._purge_safe(incomplete, stale)
         finally:
             try:
                 self.dev.command("AT+CMGF=1", 5)
             except Exception:
                 log.exception("Failed to restore TEXT mode after receive poll")
 
-    def _purge_safe(self):
-        """Clean read/sent leftovers without ever risking a new message.
+    def _track_incomplete(self, incomplete: list) -> list:
+        """Track partial long-SMS groups across polls; return stale ones to drop.
 
-        AT+CMGD=<idx>,2 only removes READ and SENT entries, but to be safe
-        against a message that arrives after the main CMGL pass we first
-        re-list: if any unread SMS arrived meanwhile, defer the purge to the
-        next poll (that SMS will be picked up and processed then).
+        A group that stays incomplete for longer than ``INCOMPLETE_GROUP_TTL``
+        is dropped (its SIM records are deleted by :meth:`_purge_safe`) so a
+        long SMS that permanently lost a segment can never wedge SIM storage.
+        """
+        now = time.monotonic()
+        cur, stale = {}, []
+        for inc in incomplete:
+            key = (inc["sender"], inc["ref"], inc["total"])
+            rec = self._incomplete.get(key)
+            if rec and now - rec["since"] > INCOMPLETE_GROUP_TTL:
+                stale.append((key, inc["indices"]))
+                continue
+            cur[key] = {"since": rec["since"] if rec else now}
+        self._incomplete = cur
+        return stale
+
+    def _purge_safe(self, incomplete: list, stale: list):
+        """Clean READ/SENT leftovers without ever risking a new message.
+
+        AT+CMGD=1,2 only removes READ and SENT entries, so to be safe against a
+        message that arrives after the main CMGL pass we first re-list in PDU
+        mode. The re-list only returns REC UNREAD records, which are either:
+
+        - a *new* message that arrived meanwhile (purge must wait one poll), or
+        - a segment of a concatenation group still incomplete from this poll --
+          untouched by CMGD=1,2 because it is unread, so its mere presence must
+          not block the cleanup of READ/SENT leftovers forever.
+
+        Stale partial groups are also dropped here, but only after confirming
+        (from the fresh re-list) that a slot still holds a segment of that exact
+        group -- a SIM index can be reused by a new message once the old one is
+        freed, so we never delete by index number alone.
         """
         try:
             recheck = self.dev.command("AT+CMGL", 15)
-            if not parse_cmgl_pdu(recheck.lines):
+            records = parse_cmgl_pdu(recheck.lines)
+            known = {(inc["sender"], inc["ref"], inc["total"]) for inc in incomplete}
+            recs_by_idx: dict[str, dict] = {}
+            fresh_seen = False
+            for rec in records:
+                recs_by_idx[rec["index"]] = rec
+                try:
+                    p = parse_sms_pdu(rec["pdu"])
+                except Exception:
+                    fresh_seen = True  # unparseable -> treat as new and defer
+                    break
+                if p["ref"] is None or (
+                    _norm_number(p["sender"]), p["ref"], p["total"]
+                ) not in known:
+                    fresh_seen = True
+                    break
+            if not fresh_seen:
                 self.dev.command("AT+CMGD=1,2", 3)
+            for key, indices in stale:
+                for index in indices:
+                    rec = recs_by_idx.get(index)
+                    if rec is None:
+                        continue  # slot already freed
+                    try:
+                        p = parse_sms_pdu(rec["pdu"])
+                    except Exception:
+                        continue  # cannot confirm identity -> never delete
+                    if p["ref"] is not None and (
+                        _norm_number(p["sender"]), p["ref"], p["total"]
+                    ) == key:
+                        self._delete_msg(index)
         except Exception:
             log.exception("SMS residue purge failed")
 
@@ -631,7 +706,7 @@ class SerialWorker(threading.Thread):
     def _already_stored(self, sender: str, content: str) -> bool:
         row = self.db.row(
             "SELECT id FROM messages WHERE direction='in' AND sender=? AND content=? "
-            "AND datetime(created_at) >= datetime('now','-10 minutes') LIMIT 1",
+            "AND datetime(created_at) >= datetime('now','localtime','-10 minutes') LIMIT 1",
             (sender, content),
         )
         return row is not None

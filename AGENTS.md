@@ -64,7 +64,7 @@ data/            SQLite 数据库（gitignored）
 
 ## REST API 概览
 
-鉴权头 `Authorization: Bearer <token>`，接受管理端 JWT 或启用状态的 API Key（`/api/auth/*` 的 setup/login/setup-required 及 `/api/health`、`/api/version` 公开；`/api/auth/change-password` 仅 JWT；`/api/notify-configs` 的列表/增删改/测试涉及明文渠道密钥，仅管理端 JWT）。完整字段与示例见 `docs/API.md`。
+鉴权头 `Authorization: Bearer <token>`，接受管理端 JWT 或启用状态的 API Key（`/api/auth/*` 的 setup/login/setup-required 及 `/api/health`、`/api/version` 公开；`/api/auth/change-password`、`/api/keys/*`、`/api/tasks/*`、`/api/contacts/*` 及 `/api/notify-configs` 的列表/增删改/测试仅管理端 JWT）。完整字段与示例见 `docs/API.md`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -122,7 +122,7 @@ Webhook 推送 body：
 
 ## 短信收发技术要点
 
-- **收**：每 `POLL_INTERVAL` 切到 **PDU 模式**轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持数字枚举如 `AT+CMGL=4` 会返回 `+CMS ERROR: 500`，`AT+CMGL=0` 也不可靠，一律用无参）→ 每条记录是完整 PDU（模组会去掉 SCA 首字节）→ 解析 SMS-DELIVER/SUBMIT（semi-octet 地址、SCTS、DCS、UCS2/GSM7 内容）→ **长短信拼接**：多段短信每段的连接头 `05 00 03 <ref> <total> <seq>` 都会保留在 PDU 里，按**真实段序号 seq** 排序重组为**一条**消息（网络乱序投递也能拼对──这是 TEXT 模式下按 SIM 索引拼接会乱序的原因）→ `(sender, ref, total)` 分组 → 去重（10 分钟内同号码同内容）→ 入库 `stored` → 推送一次 → 逐段 `AT+CMGD` 删除 → 恢复 `AT+CMGF=1`。**拼接组未收齐（缺失某段）时不入库**，段留在 SIM 等下一轮补齐后再拼，避免存半条；发件号统一转成纯数字。**清残留有保护**：恢复 TEXT 前先重发一次 `AT+CMGL`，若期间有新短信到达则不执行 `AT+CMGD=1,2`（防止清掉刚到的新短信），留到下一轮处理。设备/SIM 存储不保留短信。
+- **收**：每 `POLL_INTERVAL` 切到 **PDU 模式**轮询 `AT+CMGL`（无参 = REC UNREAD；Air780E 不支持数字枚举如 `AT+CMGL=4` 会返回 `+CMS ERROR: 500`，`AT+CMGL=0` 也不可靠，一律用无参）→ 每条记录是完整 PDU（模组会去掉 SCA 首字节）→ 解析 SMS-DELIVER/SUBMIT（semi-octet 地址、SCTS、DCS、UCS2/GSM7 内容）→ **长短信拼接**：多段短信每段的连接头 `05 00 03 <ref> <total> <seq>` 都会保留在 PDU 里，按**真实段序号 seq** 排序重组为**一条**消息（网络乱序投递也能拼对──这是 TEXT 模式下按 SIM 索引拼接会乱序的原因）→ `(sender, ref, total)` 分组 → 去重（10 分钟内同号码同内容）→ 入库 `stored` → 推送一次 → 逐段 `AT+CMGD` 删除 → 恢复 `AT+CMGF=1`。**拼接组未收齐（缺失某段）时不入库**，段留在 SIM 等下一轮补齐后再拼，避免存半条；不完整组按 `(sender, ref, total)` 跟踪，超过 24 小时仍缺段则按 SIM 索引显式删除，残缺长短信不会永久占驻 SIM。发件号统一转成纯数字。**清残留有保护**：恢复 TEXT 前先重发一次 `AT+CMGL`，只有确认为“新到达”的短信才跳过 `AT+CMGD=1,2`（防止清掉刚到的新短信，留到下一轮处理）；本轮已知的不完整拼接段不会被误判为新短信而阻塞清理（它们仍是 REC UNREAD，`AT+CMGD=1,2` 本就不删）。设备/SIM 存储不保留短信。
 - **通知异步**：短信/来电的推送与 `on_message` 回调在独立通知线程（`SerialWorker._executor`）执行，绝不阻塞串口读线程或轮询线程（慢 webhook 也不会拖垮收/发）。`forward_logs` 每 8 小时自动清理 180 天前的记录。
 - **发**：REST 先入库 `queued` → worker 串行发送（一条锁，避免与轮询撞车；发送队列每轮至多处理 3 条，与收短信轮询交错，大批量时不饿死接收）→ `sending` → `sent`/`failed`。号码在发送前统一清洗为 `0-9+*#`（防 AT 注入）。按内容是否含非 ASCII 自动选发送方式：纯 ASCII 单条走 **TEXT 模式**（`AT+CSCS="GSM"` + `AT+CSMP=17,167,0,0`，160 字符/条，`AT+CMGS="<号码>"` + ctrl-Z 提交）；**长短信（多条）一律走 PDU 拼接**（`AT+CMGF=0` + `AT+CMGS=<PDU长度>` + PDU hex + ctrl-Z，发完恢复 `AT+CMGF=1`）：ASCII 用 DCS=0 GSM 7bit（153 字符/段），中文/非 ASCII 用 DCS=8 UCS2（67 字符/段），每段带连接 UDH（`05 00 03 <ref> <total> <seq>`），收方重组为**一条**长短信。**必须用 PDU 发中文**：Air780E 的 TEXT 模式 `AT+CMGS` 会把正文原样（不转码 hex）当载荷发出，中文会乱码；PDU 的 GSM 7bit（GSM 03.38 表 + 0x1B 扩展）与 UCS2 均由我们自组（SCA=00 用 SIM 短信中心、地址 semi-octet、DCS、VP=A7=24h），并用 `AT+CMGW`/`AT+CMGR` 实测逐字节回读验证。内容超 255 段（GSM7 约 39k 字符 / UCS2 约 17k 字符）会被拒绝。
 - **状态**：`AT+CSQ`（信号）、`AT+CREG?`（注册，`0` 未注册 / `1` 已注册 / `5` 漫游）、`AT+COPS?`、`AT+CGMM/CGMR/CGSN`、`AT+CPIN?`、`AT+CCID`；每 `STATUS_INTERVAL` 采集一次。
@@ -146,6 +146,6 @@ Webhook 推送 body：
 - **gitignored 目录**：`data/`、`udev/`、`scripts/`、`.venv/`、`__pycache__`、`*.db*`。改动这些路径的文件不会被 git 追踪，需单独留意。
 - **运行中的服务**：该仓库目录当前可能有 uvicorn（root）正在运行并占用 `data/bridge.db`（WAL）；直接用 `sudo` 写库需谨慎并可先备份。若改串口/启动相关代码，需重启服务或 `POST /api/device/reconnect` 生效（串口层改动需重启）。
 - **设备名**：产品/模组名统一为 `Air780E`；代码内标识符（docker 名、logger 名、localStorage key）使用小写 `air780e`。避免出现裸 `Air780`。
-- **鉴权**：`app/auth.py::authenticate` 同时接受管理端 JWT 与启用状态的 API Key；新增需要鉴权的路由应采用该依赖。
+- **鉴权**：`app/auth.py::authenticate` 同时接受管理端 JWT 与启用状态的 API Key；新增需要鉴权的路由应采用该依赖。管理操作类路由（`/api/auth/change-password`、`/api/keys/*`、`/api/tasks/*`、`/api/contacts/*`、`/api/notify-configs` 列表/增删改/测试）一律 `require_admin_user`（仅管理端 JWT），API Key 只用于消息/设备/查询类端点。
 - **短信状态**：收到为 `stored`；发送为 `queued` → `sending` → `sent`/`failed`（`raw` 存 AT 返回，如 `+CMS ERROR: 331`=无网络/未插 SIM）。
 - 端口 `8000` 是 docker-compose 宿主机映射（容器内 8000）；裸机 uvicorn 默认 8000。

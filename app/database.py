@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS contacts (
 CREATE INDEX IF NOT EXISTS idx_messages_sender_content ON messages(sender, content);
 CREATE INDEX IF NOT EXISTS idx_messages_receiver ON messages(receiver);
 CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_direction_status ON messages(direction, status);
+CREATE INDEX IF NOT EXISTS idx_messages_dir_created ON messages(direction, created_at);
 CREATE INDEX IF NOT EXISTS idx_forward_logs_message_id ON forward_logs(message_id);
 CREATE INDEX IF NOT EXISTS idx_forward_logs_created_at ON forward_logs(created_at);
 """

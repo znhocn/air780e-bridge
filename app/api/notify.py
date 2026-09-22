@@ -2,7 +2,7 @@
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .. import schema
 from ..auth import authenticate, format_ts, require_admin_user
@@ -124,7 +124,7 @@ def test_config(cfg_id: int, request: Request):
 
 
 @router.get("/forward-logs", dependencies=[Depends(authenticate)])
-def list_logs(request: Request, limit: int = 100, message_id: int = 0):
+def list_logs(request: Request, limit: int = Query(100, ge=1, le=1000), message_id: int = 0):
     db = request.app.state.db
     total = db.row("SELECT COUNT(*) AS c FROM forward_logs")["c"]
     rows = db.rows(

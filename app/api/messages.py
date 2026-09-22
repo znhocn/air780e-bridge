@@ -12,8 +12,8 @@ router = APIRouter(prefix="/api/messages", tags=["messages"], dependencies=[Depe
 
 
 class SendIn(BaseModel):
-    to: str = Field(..., description="Target phone number")
-    content: str = Field(..., description="SMS content")
+    to: str = Field(..., min_length=1, max_length=40, description="Target phone number")
+    content: str = Field(..., min_length=1, max_length=40000, description="SMS content")
 
 
 def _digits(n: str) -> str:
@@ -51,9 +51,9 @@ def _peer_variants(raw: str) -> list:
 def list_messages(
     request: Request,
     direction: str | None = Query(None, pattern="^(in|out)$"),
-    sender: str | None = None,
-    q: str | None = None,
-    peer: str | None = None,
+    sender: str | None = Query(None, max_length=1000),
+    q: str | None = Query(None, max_length=1000),
+    peer: str | None = Query(None, max_length=1000),
     before_id: int | None = Query(None, ge=1, description="Fetch messages older than this id"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -99,7 +99,7 @@ def list_messages(
 @router.get("/conversations")
 def list_conversations(
     request: Request,
-    q: str | None = None,
+    q: str | None = Query(None, max_length=1000),
     limit: int = Query(200, ge=1, le=1000),
 ):
     """Group the latest messages into per-number conversations (chat sidebar)."""

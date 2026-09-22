@@ -3,12 +3,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import schema
-from ..auth import authenticate, format_ts, hash_api_key, new_api_key
+from ..auth import format_ts, hash_api_key, new_api_key, require_admin_user
 
-router = APIRouter(prefix="/api/keys", tags=["keys"])
+router = APIRouter(prefix="/api/keys", tags=["keys"], dependencies=[Depends(require_admin_user)])
 
 
-@router.get("", dependencies=[Depends(authenticate)])
+@router.get("")
 def list_keys(request: Request):
     db = request.app.state.db
     rows = db.rows(
@@ -24,7 +24,7 @@ def list_keys(request: Request):
     ]
 
 
-@router.post("", dependencies=[Depends(authenticate)], status_code=201)
+@router.post("", status_code=201)
 def create_key(body: schema.ApiKeyCreate, request: Request):
     db = request.app.state.db
     key = new_api_key()
@@ -42,7 +42,7 @@ def create_key(body: schema.ApiKeyCreate, request: Request):
     }
 
 
-@router.delete("/{key_id}", dependencies=[Depends(authenticate)])
+@router.delete("/{key_id}")
 def delete_key(key_id: int, request: Request):
     db = request.app.state.db
     if not db.row("SELECT id FROM api_keys WHERE id=?", (key_id,)):
@@ -51,7 +51,7 @@ def delete_key(key_id: int, request: Request):
     return {"ok": True}
 
 
-@router.post("/{key_id}/revoke", dependencies=[Depends(authenticate)])
+@router.post("/{key_id}/revoke")
 def revoke_key(key_id: int, request: Request):
     db = request.app.state.db
     if not db.row("SELECT id FROM api_keys WHERE id=?", (key_id,)):
@@ -60,7 +60,7 @@ def revoke_key(key_id: int, request: Request):
     return {"ok": True}
 
 
-@router.post("/{key_id}/enable", dependencies=[Depends(authenticate)])
+@router.post("/{key_id}/enable")
 def enable_key(key_id: int, request: Request):
     db = request.app.state.db
     if not db.row("SELECT id FROM api_keys WHERE id=?", (key_id,)):

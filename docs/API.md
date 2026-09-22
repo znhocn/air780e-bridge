@@ -21,9 +21,9 @@
 鉴权规则：
 
 - **公开**（无需鉴权）：`/api/health`、`/api/version`、`/api/auth/setup-required`、`/api/auth/setup`、`/api/auth/login`
-- **JWT 专属**：`/api/auth/change-password`（需管理端 JWT）
+- **JWT 专属**：`/api/auth/change-password`、`/api/keys/*`、`/api/tasks/*`、`/api/contacts/*`（需管理端 JWT，API Key 不可访问）
 - **JWT 专属（涉及明文渠道密钥）**：`/api/notify-configs` 的列表/增删改/测试（需管理端 JWT，API Key 不可访问）
-- **其余**：JWT 或 API Key 都可以（`/api/messages/*`、`/api/device/*`、`/api/keys/*`、`/api/notify-configs/types`、`/api/forward-logs`、`/api/tasks/*`、`/api/contacts/*`）
+- **其余**：JWT 或 API Key 都可以（`/api/messages/*`、`/api/device/*`、`/api/notify-configs/types`、`/api/forward-logs`）
 
 鉴权失败统一返回：
 
@@ -67,11 +67,11 @@ curl -s -X POST http://localhost:8000/api/keys \
 | GET | `/api/device/status` | 设备状态 + 消息统计 | Bearer |
 | POST | `/api/device/reconnect` | 请求重连串口 | Bearer |
 | GET | `/api/device/sms-capable` | 当前端口是否支持短信（文本模式） | Bearer |
-| GET | `/api/keys` | API 密钥列表 | Bearer |
-| POST | `/api/keys` | 创建 API 密钥 | Bearer |
-| DELETE | `/api/keys/{id}` | 永久删除密钥 | Bearer |
-| POST | `/api/keys/{id}/revoke` | 吊销密钥（停用） | Bearer |
-| POST | `/api/keys/{id}/enable` | 恢复密钥 | Bearer |
+| GET | `/api/keys` | API 密钥列表 | JWT |
+| POST | `/api/keys` | 创建 API 密钥 | JWT |
+| DELETE | `/api/keys/{id}` | 永久删除密钥 | JWT |
+| POST | `/api/keys/{id}/revoke` | 吊销密钥（停用） | JWT |
+| POST | `/api/keys/{id}/enable` | 恢复密钥 | JWT |
 | GET | `/api/notify-configs/types` | 各通知渠道配置字段定义 | Bearer |
 | GET | `/api/notify-configs` | 通知配置列表（含脱敏目标；`params` 含明文密钥） | JWT |
 | POST | `/api/notify-configs` | 新增通知配置 | JWT |
@@ -79,15 +79,15 @@ curl -s -X POST http://localhost:8000/api/keys \
 | DELETE | `/api/notify-configs/{id}` | 删除通知配置 | JWT |
 | POST | `/api/notify-configs/{id}/test` | 推送一条测试通知并记录日志 | JWT |
 | GET | `/api/forward-logs` | 转发/通知日志 | Bearer |
-| GET | `/api/tasks` | 定时任务列表 | Bearer |
-| POST | `/api/tasks` | 创建定时任务 | Bearer |
-| PUT | `/api/tasks/{id}` | 修改定时任务 | Bearer |
-| DELETE | `/api/tasks/{id}` | 删除定时任务 | Bearer |
-| POST | `/api/tasks/{id}/trigger` | 立即触发一次定时任务 | Bearer |
-| GET | `/api/contacts` | 联系人列表 | Bearer |
-| POST | `/api/contacts` | 新增联系人 | Bearer |
-| PUT | `/api/contacts/{id}` | 修改联系人 | Bearer |
-| DELETE | `/api/contacts/{id}` | 删除联系人 | Bearer |
+| GET | `/api/tasks` | 定时任务列表 | JWT |
+| POST | `/api/tasks` | 创建定时任务 | JWT |
+| PUT | `/api/tasks/{id}` | 修改定时任务 | JWT |
+| DELETE | `/api/tasks/{id}` | 删除定时任务 | JWT |
+| POST | `/api/tasks/{id}/trigger` | 立即触发一次定时任务 | JWT |
+| GET | `/api/contacts` | 联系人列表 | JWT |
+| POST | `/api/contacts` | 新增联系人 | JWT |
+| PUT | `/api/contacts/{id}` | 修改联系人 | JWT |
+| DELETE | `/api/contacts/{id}` | 删除联系人 | JWT |
 
 ---
 
@@ -162,7 +162,7 @@ curl -s -X POST http://localhost:8000/api/keys \
 { "token": "<jwt>" }
 ```
 
-错误：`401` 用户名或密码错误；`429` 同一用户名在 10 分钟内连续失败 5 次后被临时锁定 2 分钟（简单的暴力破解防护）。
+错误：`401` 用户名或密码错误；`429` 同一来源 IP + 用户名在 10 分钟内连续失败 5 次后被临时锁定 2 分钟（简单的暴力破解防护，锁定按来源 IP 隔离，不会误伤其他来源的真实登录）。请求体限制：`username` ≤ 64 字符、`password` ≤ 128 字符（超限返回 `422`）。
 
 ### POST /api/auth/change-password
 
@@ -198,9 +198,9 @@ Query 参数（全部可选）：
 | 参数 | 类型 | 说明 |
 |---|---|---|
 | `direction` | string | `in`（收）或 `out`（发），仅这两个值 |
-| `sender` | string | 发件人模糊匹配（LIKE %..%） |
-| `q` | string | 内容模糊匹配（LIKE %..%） |
-| `peer` | string | 按号码过滤（收/发均可，兼容 `86/+/0086` 前缀变体） |
+| `sender` | string | 发件人模糊匹配（LIKE %..%，≤1000 字符） |
+| `q` | string | 内容模糊匹配（LIKE %..%，≤1000 字符） |
+| `peer` | string | 按号码过滤（收/发均可，兼容 `86/+/0086` 前缀变体，≤1000 字符） |
 | `before_id` | int | 只取 `id < before_id` 的更早消息（用于上翻加载） |
 | `page` | int | 页码，≥1，默认 1 |
 | `page_size` | int | 每页条数，1–200，默认 50 |
@@ -549,7 +549,7 @@ Query 参数：
 
 转发/通知日志（最新在前）。
 
-Query 参数：`limit`（默认 100）、`message_id`（>0 时只查该短信的日志）。
+Query 参数：`limit`（1–1000，默认 100）、`message_id`（>0 时只查该短信的日志）。
 
 响应 `200`：
 
@@ -723,7 +723,7 @@ TOKEN=$(curl -s -X POST $BASE/api/auth/login \
   -d '{"username":"admin","password":"your-password"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 KEY="ak_your_api_key"   # 或直接用 API Key
 
-# 查看设备状态
+# 查看设备状态（以下消息/设备接口均可使用 $KEY）
 curl -s $BASE/api/device/status -H "Authorization: Bearer $KEY"
 
 # 发送短信（异步）
@@ -734,13 +734,14 @@ curl -s -X POST $BASE/api/messages/send \
 # 列出收到的短信
 curl -s "$BASE/api/messages?direction=in&page=1&page_size=20" -H "Authorization: Bearer $KEY"
 
+# 密钥/定时任务/联系人/通知配置涉及管理操作，仅接受管理端 JWT（$TOKEN）：
 # 创建钉钉通知配置
 curl -s -X POST $BASE/api/notify-configs \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"name":"钉钉","type":"dingtalk","enabled":true,"params":{"token":"<access_token>"}}'
 
 # 测试通知配置
-curl -s -X POST $BASE/api/notify-configs/1/test -H "Authorization: Bearer $KEY"
+curl -s -X POST $BASE/api/notify-configs/1/test -H "Authorization: Bearer $TOKEN"
 
 # 一键测试发送到 10086（仓库脚本）
 API_KEY=$KEY ./scripts/test_send_10086.sh "你好"

@@ -1,5 +1,7 @@
 """Device status endpoints (API key auth)"""
 
+import re
+
 from fastapi import APIRouter, Depends, Request
 
 from ..auth import authenticate
@@ -12,15 +14,15 @@ def status_info(request: Request):
     worker = request.app.state.worker
     db = request.app.state.db
     st = worker.status() if worker else {}
+    start = "'" + db.row("SELECT datetime('now','localtime','start of day') AS d")["d"] + "'"
     stats = db.row(
-        "SELECT "
+        f"SELECT "
         "(SELECT COUNT(*) FROM messages) AS total, "
         "(SELECT COUNT(*) FROM messages WHERE direction='in') AS in_cnt, "
         "(SELECT COUNT(*) FROM messages WHERE direction='out' AND status IN ('queued','sending')) AS pending_cnt, "
-        "(SELECT COUNT(*) FROM messages WHERE direction='in' AND date(created_at)=date('now','localtime')) AS today_in_cnt, "
-        "(SELECT COUNT(*) FROM messages WHERE direction='out' AND date(created_at)=date('now','localtime')) AS today_out_cnt, "
-        "(SELECT COUNT(*) FROM messages WHERE direction='out' AND status='failed' "
-        "AND date(created_at)=date('now','localtime')) AS today_failed_cnt, "
+        f"(SELECT COUNT(*) FROM messages WHERE direction='in' AND created_at >= {start}) AS today_in_cnt, "
+        f"(SELECT COUNT(*) FROM messages WHERE direction='out' AND created_at >= {start}) AS today_out_cnt, "
+        f"(SELECT COUNT(*) FROM messages WHERE direction='out' AND status='failed' AND created_at >= {start}) AS today_failed_cnt, "
         "(SELECT COUNT(*) FROM forward_logs WHERE channel='call') AS calls_cnt"
     )
     st["messages_total"] = stats["total"]
@@ -49,5 +51,8 @@ def sms_capable(request: Request):
     if not worker or not worker.dev or not worker.dev.connected:
         return {"capable": False, "detail": "not connected"}
     res = worker.dev.command("AT+CSMS?", 5)
-    ok = res.ok and any("CSMS" in ln or ">" in ln for ln in res.lines)
-    return {"capable": True, "detail": res.lines}
+    capable = False
+    if res.ok:
+        m = re.search(r"\+CSMS:\s*(\d+)\s*,", "\n".join(res.lines))
+        capable = bool(m and int(m.group(1)) >= 1)
+    return {"capable": capable, "detail": res.lines}
